@@ -1,0 +1,106 @@
+{
+  "manifestVersion": 1,
+  "id": "harogic",
+  "name": "Harogic Spectrum Analyzers",
+  "version": "0.1.0",
+  "license": "MIT",
+  "platforms": [
+    "darwin-arm64"
+  ],
+  "repository": "https://github.com/mbsound/soundbase-plugin-harogic",
+  "maintainers": [
+    {
+      "name": "Matt Bell",
+      "email": "matt@mbsound.org"
+    }
+  ],
+  "contract": {
+    "core": "1.4",
+    "modules": {
+      "SpectrumAnalyzer": "1.2"
+    }
+  },
+  "runtime": {
+    "type": "node",
+    "entrypoint": "main.js"
+  },
+  "deployment": [
+    "managed"
+  ],
+  "template": {
+    "name": "soundbase-plugin-template",
+    "version": "1.0.15"
+  },
+  "products": [
+    {
+      "deviceTypeId": "plugin:harogic/usb",
+      "manufacturer": {
+        "id": "harogic",
+        "name": "Harogic"
+      },
+      "model": {
+        "id": "usb",
+        "name": "USB analyzer",
+        "displayName": "Harogic USB Analyzer"
+      },
+      "family": {
+        "id": "harogic",
+        "name": "Harogic"
+      },
+      "capabilities": {
+        "spectrumAnalyzer": true
+      },
+      "traits": {
+        "isSpectrumAnalyzer": true
+      }
+    },
+    {
+      "deviceTypeId": "plugin:harogic/network",
+      "manufacturer": {
+        "id": "harogic",
+        "name": "Harogic"
+      },
+      "model": {
+        "id": "network",
+        "name": "Network analyzer",
+        "displayName": "Harogic Network Analyzer"
+      },
+      "family": {
+        "id": "harogic",
+        "name": "Harogic"
+      },
+      "capabilities": {
+        "spectrumAnalyzer": true
+      },
+      "traits": {
+        "isSpectrumAnalyzer": true
+      }
+    }
+  ],
+  "pluginConfigFields": [
+    {
+      "id": "addresses",
+      "type": "textinput",
+      "label": "Network analyzer addresses",
+      "help": "Comma-separated addresses of Harogic network analyzers to look for, e.g. `192.168.1.100, harogic-net1.local`. Add `:port` if the data port is not 5000. USB analyzers are found automatically."
+    }
+  ],
+  "stateKeys": [],
+  "deviceConfigFields": [
+    {
+      "id": "host",
+      "type": "textinput",
+      "label": "Address (network analyzers)",
+      "help": "IPv4 address or host name of a Harogic network analyzer, e.g. `192.168.1.100`. Leave empty for a USB analyzer."
+    },
+    {
+      "id": "port",
+      "type": "number",
+      "label": "Data port (network analyzers)",
+      "default": 5000,
+      "min": 1,
+      "max": 65535,
+      "step": 1
+    }
+  ]
+}
