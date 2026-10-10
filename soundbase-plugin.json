@@ -82,7 +82,14 @@
       "id": "addresses",
       "type": "textinput",
       "label": "Network analyzer addresses",
-      "help": "Comma-separated addresses of Harogic network analyzers to look for, e.g. `192.168.1.100, harogic-net1.local`. Add `:port` if the data port is not 5000. USB analyzers are found automatically."
+      "help": "Comma-separated addresses or names of Harogic network analyzers to look for, e.g. `192.168.1.100, harogic-net1.local`. Add `:port` if the data port is not 5000. A name also reaches an analyzer on another subnet over IPv6, on the same cable or switch. USB analyzers are found automatically."
+    },
+    {
+      "id": "mdns",
+      "type": "checkbox",
+      "label": "Find network analyzers automatically",
+      "default": true,
+      "help": "Lists every Harogic network analyzer announcing itself (mDNS) on this computer's networks, including one on another subnet reachable over IPv6."
     }
   ],
   "stateKeys": [],
@@ -90,8 +97,8 @@
     {
       "id": "host",
       "type": "textinput",
-      "label": "Address (network analyzers)",
-      "help": "IPv4 address or host name of a Harogic network analyzer, e.g. `192.168.1.100`. Leave empty for a USB analyzer."
+      "label": "Address or name (network analyzers)",
+      "help": "IPv4 address or name of a Harogic network analyzer, e.g. `192.168.1.100` or `harogic-net1.local`. A name also reaches it on another subnet over IPv6 link-local. Leave empty for a USB analyzer."
     },
     {
       "id": "port",

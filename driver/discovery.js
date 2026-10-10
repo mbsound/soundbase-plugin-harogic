@@ -3,11 +3,12 @@
 // Discovery runs once a second while SoundBase is listing devices, so it must
 // be cheap and must never touch an analyzer's measurement session: USB
 // analyzers are read from the IORegistry, and network analyzers are probed on
-// their system port (9000), never the data port the SDK uses.
+// their system port (9000) or settings service, never the data port the SDK
+// uses. mDNS browsing is in net-route.js.
 
 import { execFile } from 'node:child_process';
-import { lookup } from 'node:dns/promises';
-import { isIPv4, Socket } from 'node:net';
+import { Socket } from 'node:net';
+import { resolveTarget, SYSTEM_PORT } from './net-route.js';
 
 // From the SDK's htrausb.conf: vendor/product ids of Harogic analyzers.
 export const HAROGIC_USB_IDS = [
@@ -18,7 +19,6 @@ export const HAROGIC_USB_IDS = [
 ];
 
 export const DEFAULT_DATA_PORT = 5000;
-const SYSTEM_PORT = 9000;
 const PROBE_TIMEOUT_MS = 800;
 
 /**
@@ -76,34 +76,29 @@ export function parseAddresses(raw) {
     });
 }
 
-/** The IPv4 address the SDK needs for a host name or address. */
-export async function resolveIPv4(host) {
-  if (isIPv4(host)) return host;
-  const { address } = await lookup(host, { family: 4 });
-  return address;
-}
-
 /**
- * Is something answering at this address? A refused connection counts: it
- * proves the host is up, and an analyzer that is busy rebooting its server is
- * still worth listing. Silence or no route does not.
+ * Is an analyzer answering at this address or name? On this Mac's networks:
+ * its system port (9000) accepts, or refuses — a refusal still proves the host
+ * is up. A name on another subnet counts when it answers over IPv6
+ * link-local. The SDK's data port is never touched.
  */
-export async function probeHost(host, port = SYSTEM_PORT, timeoutMs = PROBE_TIMEOUT_MS) {
-  let ip;
+export async function probeHost(host) {
+  let route;
   try {
-    ip = await resolveIPv4(host);
+    route = await resolveTarget(host);
   } catch {
     return false;
   }
+  if (route.linkLocal) return true;
   return new Promise((resolve) => {
     const socket = new Socket();
     const done = (up) => {
       socket.destroy();
       resolve(up);
     };
-    socket.setTimeout(timeoutMs, () => done(false));
+    socket.setTimeout(PROBE_TIMEOUT_MS, () => done(false));
     socket.once('connect', () => done(true));
     socket.once('error', (err) => done(err.code === 'ECONNREFUSED'));
-    socket.connect(port, ip);
+    socket.connect(SYSTEM_PORT, route.ip);
   });
 }

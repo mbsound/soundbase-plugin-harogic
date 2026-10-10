@@ -69,8 +69,9 @@ export class HarogicAnalyzer {
    *           { iface: 'eth', ip: string, port: number },
    *           describe: string, log?: Function }} opts
    */
-  constructor({ key, target, describe, log }) {
+  constructor({ key, target, describe, log, env = {} }) {
     this.key = key;
+    this.env = env;
     this.target = target;
     this.describe = describe;
     this.log = log ?? (() => {});
@@ -99,6 +100,7 @@ export class HarogicAnalyzer {
       } catch (err) {
         failures.push({ build: build.label, err });
         await this.#dropWorker();
+        this.log('info', `${this.describe}: SDK ${build.label} could not open it (${err.message})`);
         // Over USB a firmware mismatch is -49; over Ethernet it shows up as a
         // reset connection, so any failure there is worth the other build.
         if (err.code !== FIRMWARE_MISMATCH && this.target.iface === 'usb') break;
@@ -111,7 +113,7 @@ export class HarogicAnalyzer {
     const attempts = this.target.iface === 'eth' ? NET_OPEN_ATTEMPTS : 1;
     let last;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      this.worker = new WorkerClient({ ...build, log: this.log }).start();
+      this.worker = new WorkerClient({ ...build, env: { ...build.env, ...this.env }, log: this.log }).start();
       try {
         const timeout = this.target.iface === 'eth' ? NET_OPEN_STALL_MS : USB_OPEN_TIMEOUT_MS;
         const info = await this.worker.call('open', this.target, timeout);
@@ -173,14 +175,16 @@ function explainOpenFailure(describe, failures) {
   if (mismatch.length === failures.length && failures.length > 0) {
     return (
       `${describe}: the analyzer's firmware matches none of the Harogic SDK builds in this plugin ` +
-      `(${failures.map((f) => f.build).join(', ')}). Update the analyzer's firmware with SAStudio4, ` +
+      `(${failures.map((f) => f.build).join(', ')}). Update the analyzer's firmware, ` +
       'or install a plugin release that includes a matching SDK.'
     );
   }
   const last = failures.at(-1)?.err;
+  if (failures.some((f) => f.err.code === 10060))
+    return `${describe}: the analyzer did not answer on its data port. Check that it is connected and that no other application is using it.`;
   if (last?.timeout)
     return `${describe}: the analyzer did not answer (${last.message}). Check that it is powered and connected.`;
   if (last?.code === -1 || last?.code === -2 || last?.code === undefined)
-    return `${describe}: could not open the analyzer (${last?.message ?? 'unknown error'}). Check that it is connected and that no other application (SAStudio4, fReqon) is using it.`;
+    return `${describe}: could not open the analyzer (${last?.message ?? 'unknown error'}). Check that it is connected and that no other application is using it or has taken the USB Device.`;
   return `${describe}: could not open the analyzer (${last.message}).`;
 }

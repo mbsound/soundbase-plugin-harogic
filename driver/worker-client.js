@@ -51,7 +51,7 @@ export class WorkerClient {
     );
     child.on('error', (err) => this.#onGone(`could not start: ${err.message}`));
     child.on('exit', (code, signal) =>
-      this.#onGone(signal ? `killed by ${signal}` : `exited with code ${code}`)
+      this.#onGone(this.killReason ?? (signal ? `killed by ${signal}` : `exited with code ${code}`))
     );
     return this;
   }
@@ -64,11 +64,9 @@ export class WorkerClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new WorkerError(`${op} did not answer within ${Math.round(timeoutMs / 1000)} s`, {
-            timeout: true,
-          })
-        );
+        const reason = `${op} did not answer within ${Math.round(timeoutMs / 1000)} s`;
+        reject(new WorkerError(reason, { timeout: true }));
+        this.killReason = reason; // what the exit reports, rather than "SIGKILL"
         this.kill();
       }, timeoutMs);
       timer.unref?.();
@@ -112,13 +110,15 @@ export class WorkerClient {
   #onGone(reason) {
     if (this.dead) return;
     this.dead = true;
+    const timeout = Boolean(this.killReason);
+    const message = timeout ? reason : `worker ${reason}`;
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer);
-      reject(new WorkerError(`worker ${reason}`, { exited: true }));
+      reject(new WorkerError(message, { exited: true, timeout }));
     }
     this.pending.clear();
     const onExit = this.onExit;
     this.onExit = null;
-    onExit?.(new WorkerError(`worker ${reason}`, { exited: true }));
+    onExit?.(new WorkerError(message, { exited: true, timeout }));
   }
 }

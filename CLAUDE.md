@@ -39,7 +39,6 @@ scripts/                doctor, smoke, manifest, rename, bump-version, release, 
   and two SDK builds cannot share a process.
 - **Tests never open real hardware.** They set `HAROGIC_PLUGIN_WORKERS` to the
   fake worker; keep it that way for any new test that opens a device.
-
 - **Never edit `main.js`.** It is byte-identical across every first-party
   plugin and is the contract's entry point. Anything you are tempted to put
   there belongs in `adapter.js`. The single exception is adding a lifecycle

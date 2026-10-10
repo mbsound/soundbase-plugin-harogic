@@ -10,6 +10,7 @@
 //                       decrements it and then never answers (a stalled
 //                       network handshake)
 //   FAKE_DIE_AFTER      exit abruptly after this many sweeps (cable pulled)
+//   FAKE_HANG_AFTER     stop answering after this many sweeps (network gone)
 //   FAKE_LOG_FILE       append every request's op here, one per line
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -19,6 +20,7 @@ const env = process.env;
 const sdk = env.FAKE_SDK ?? '0.55.100';
 const opensWith = (env.FAKE_OPENS_WITH ?? sdk).split(',');
 const dieAfter = Number(env.FAKE_DIE_AFTER) || Infinity;
+const hangAfter = Number(env.FAKE_HANG_AFTER) || Infinity;
 
 let config = null;
 let sweeps = 0;
@@ -63,6 +65,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         vbwHz: req.rbwHz,
         refLevelDbm: Math.min(20, Math.max(-50, Math.round(req.refLevelDbm))),
         atten: req.atten,
+        // like the R1000: a hand-set attenuation turns an Auto preamp off
+        preamp: req.atten >= 0 && req.preamp === 0 ? 1 : req.preamp,
         nativePoints: 4001,
         hops: 1,
         minSweepTimeS: 0.01,
@@ -73,6 +77,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       if (!config) return fail(-1, 'not configured');
       sweeps += 1;
       if (sweeps > dieAfter) process.exit(3);
+      if (sweeps > hangAfter) return; // never answers
       const { startHz, stopHz, pointCount } = config;
       const span = stopHz - startHz;
       const amps = [];

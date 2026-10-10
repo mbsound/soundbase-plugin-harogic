@@ -109,7 +109,7 @@ static void print_amps(const float *a, int n) {
 /* ----------------------------------------------------------------- state */
 
 static void *dev;
-static bool is_open, mock;
+static bool is_open, mock, debug;
 static uint16_t model;
 
 static SWP_Profile_TypeDef prof_in, prof_out;
@@ -118,8 +118,8 @@ static bool configured;
 static double user_start, user_stop; /* the grid SoundBase draws */
 static int out_points;
 
-static double *nat_freq;
-static float *nat_pwr, *prev_pwr, *out_pwr;
+static double *nat_freq, *hop_freq;
+static float *nat_pwr, *prev_pwr, *out_pwr, *hop_pwr;
 static int nat_cap;
 static bool have_prev;
 
@@ -132,7 +132,13 @@ static double now_s(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+#define HOP_SCRATCH 65536
+
 static void ensure_native(int n) {
+    if (!hop_freq) {
+        hop_freq = calloc(HOP_SCRATCH, sizeof(double));
+        hop_pwr = calloc(HOP_SCRATCH, sizeof(float));
+    }
     if (n <= nat_cap) return;
     nat_freq = realloc(nat_freq, sizeof(double) * n);
     nat_pwr = realloc(nat_pwr, sizeof(float) * n);
@@ -192,8 +198,36 @@ static void op_open(long id, const char *line) {
             boot.PhysicalInterface = USB;
             boot.DevicePowerSupply = USBPortAndPowerPort;
         }
-        st = Device_Open(&dev, (int)get_num(line, "index", 0), &boot, &info);
-        if (st < 0) {
+        /* USB: the index is a guess from the order macOS lists the analyzers
+           in. When the caller knows the serial it wants ("expectUid": the
+           low 64 bits of the UID, which is the tail of the USB serial string),
+           open by index, check, and move to the next index on a mismatch. */
+        char want[32] = "";
+        get_str(line, "expectUid", want, sizeof want);
+        unsigned long long want_uid = want[0] ? strtoull(want, NULL, 16) : 0;
+        int index = (int)get_num(line, "index", 0);
+        int tried = 0;
+        for (;;) {
+            st = Device_Open(&dev, index, &boot, &info);
+            /* Anything but 0 is a failed open: negative SDK errors, and positive
+               socket errors over Ethernet (10060: the analyzer did not answer).
+               The handle is then unusable; even Device_Close on it crashes. */
+            if (st != 0) {
+                dev = NULL;
+                break;
+            }
+            if (eth || !want_uid || info.DeviceInfo.DeviceUID == want_uid) break;
+            fprintf(stderr, "index %d is analyzer %016llx, not %016llx; trying the next\n", index,
+                    (unsigned long long)info.DeviceInfo.DeviceUID, want_uid);
+            Device_Close(&dev);
+            dev = NULL;
+            if (++tried >= 8) {
+                st = -1;
+                break;
+            }
+            index = (index + 1) % 8;
+        }
+        if (st != 0) {
             char msg[160];
             snprintf(msg, sizeof msg, "Device_Open returned %d (firmware 0x%x)", st,
                      (unsigned)info.DeviceInfo.MFWVersion);
@@ -203,14 +237,17 @@ static void op_open(long id, const char *line) {
     }
     is_open = true;
     model = info.DeviceInfo.Model;
+    uint64_t funcs = 0;
+    if (!mock) Device_GetSupportedFunctions(&dev, &funcs);
     configured = false;
     printf("{\"id\":%ld,\"ok\":true,\"result\":{\"status\":%d,\"model\":%u,\"uid\":\"%016llx\","
            "\"hardware\":%u,\"mcuFirmware\":%u,\"fpgaFirmware\":%u,\"busSpeed\":%u,\"api\":%u,"
-           "\"sdk\":\"%s\",\"openSeconds\":%.2f,\"warnings\":[",
+           "\"sdk\":\"%s\",\"openSeconds\":%.2f,\"ifagcSupported\":%s,\"warnings\":[",
            id, st, model, (unsigned long long)info.DeviceInfo.DeviceUID,
            info.DeviceInfo.HardwareVersion, (unsigned)info.DeviceInfo.MFWVersion,
            (unsigned)info.DeviceInfo.FFWVersion, (unsigned)info.BusSpeed,
-           (unsigned)Get_APIVersion(), SDK_LABEL, now_s() - t0);
+           (unsigned)Get_APIVersion(), SDK_LABEL, now_s() - t0,
+           (funcs & (1ULL << 34)) /* DEVICE_FUNCTION_IFAGC; the SDK macro is C++ syntax */ ? "true" : "false");
     for (int i = 0; i < info.Warnings && i < 7; i++) printf("%s%d", i ? "," : "", info.WarningCodes[i]);
     printf("]}}\n");
     fflush(stdout);
@@ -226,6 +263,8 @@ static void op_config(long id, const char *line) {
     if (points < 2) points = 2;
     if (stop <= start) stop = start + 1e3;
     double rbw = get_num(line, "rbwHz", 0);
+    bool fallback = false;
+    int first_status = 0;
 
     if (mock) {
         memset(&prof_out, 0, sizeof prof_out);
@@ -260,7 +299,19 @@ static void op_config(long id, const char *line) {
         prof_in.TraceDetector = (TraceDetector_TypeDef)(int)get_num(line, "traceDetector", TraceDetector_PosPeak);
         prof_in.SpurRejection = (SpurRejection_TypeDef)(int)get_num(line, "spur", prof_in.SpurRejection);
         prof_in.TraceAlign = AlignToStart;
+        /* IF AGC: the SDK lowers IF gain when the IF saturates, instead of
+           clipping (supported on some models; DEVICE_FUNCTION_IFAGC). */
+        double ifagc = get_num(line, "ifagc", -1);
+        if (ifagc >= 0) prof_in.EnableIFAGC = ifagc > 0;
+        if (debug)
+            fprintf(stderr, "config in: ifagc=%u gainStrategy=%d detector=%d traceDetector=%d spur=%d window=%d "
+                    "swtMode=%d tracePoints=%u ptsStrategy=%d traceType=%d lo=%d\n",
+                    prof_in.EnableIFAGC, (int)prof_in.GainStrategy, (int)prof_in.Detector,
+                    (int)prof_in.TraceDetector, (int)prof_in.SpurRejection, (int)prof_in.Window,
+                    (int)prof_in.SweepTimeMode, prof_in.TracePoints, (int)prof_in.TracePointsStrategy,
+                    (int)prof_in.TraceType, (int)prof_in.LOOptimization);
         int st = SWP_Configuration(&dev, &prof_in, &prof_out, &ti);
+        first_status = st;
         if (st != 0) {
             /* fReqon's experience: a profile the SDK refuses with AlignToStart
                on some builds is accepted from a fresh default profile */
@@ -272,6 +323,7 @@ static void op_config(long id, const char *line) {
             prof_in.RBW_Hz = keep.RBW_Hz;
             prof_in.TraceAlign = AlignToStart;
             st = SWP_Configuration(&dev, &prof_in, &prof_out, &ti);
+            fallback = true;
         }
         if (st != 0) {
             char msg[96];
@@ -295,41 +347,50 @@ static void op_config(long id, const char *line) {
     configured = true;
     printf("{\"id\":%ld,\"ok\":true,\"result\":{\"startHz\":%.3f,\"stopHz\":%.3f,\"pointCount\":%d,"
            "\"rbwHz\":%.3f,\"vbwHz\":%.3f,\"refLevelDbm\":%.2f,\"atten\":%d,\"nativePoints\":%d,"
-           "\"hops\":%d,\"minSweepTimeS\":%.4f}}\n",
+           "\"hops\":%d,\"partialPoints\":%d,\"userStartIndex\":%u,\"userStopIndex\":%u,"
+           "\"binHz\":%.3f,\"firstHz\":%.3f,\"minSweepTimeS\":%.4f,\"preamp\":%d,\"detector\":%d,"
+           "\"spur\":%d,\"fallback\":%s,\"firstStatus\":%d,\"ifagc\":%d}}\n",
            id, user_start, user_stop, out_points, prof_out.RBW_Hz, prof_out.VBW_Hz,
            prof_out.RefLevel_dBm, (int)prof_out.Atten, ti.FullsweepTracePoints, ti.TotalHops,
-           ti.EstimateMinSweepTime);
+           ti.PartialsweepTracePoints, ti.UserStartIndex, ti.UserStopIndex, ti.TraceBinBW_Hz,
+           ti.StartFreq_Hz, ti.EstimateMinSweepTime, (int)prof_out.Preamplifier, (int)prof_out.Detector,
+           (int)prof_out.SpurRejection, fallback ? "true" : "false", first_status, (int)prof_out.EnableIFAGC);
     fflush(stdout);
 }
 
-/* Native trace -> SoundBase's grid. Each output point covers half a step
-   either side of its frequency and takes the strongest native point in it, so
-   a narrow carrier survives decimation. A bin with no native point in it
-   (fewer native points than output points) is interpolated. */
+/* Native trace -> SoundBase's grid. Each native point goes to the output bin
+   nearest its frequency (half a step either side) and each bin keeps the
+   strongest, so a narrow carrier survives decimation. Points are binned one by
+   one, so their order does not matter, and non-finite ones are skipped. Only a
+   bin no point landed in (fewer native points than output points, or a hole)
+   is interpolated, between its nearest filled neighbours. */
+static int empty_bins; /* output bins no native point landed in, last sweep */
+
 static void resample(const double *f, const float *p, int lo, int hi) {
     int n = out_points;
+    empty_bins = 0;
     double step = (user_stop - user_start) / (n - 1);
-    int j = lo;
-    for (int k = 0; k < n; k++) {
-        double fc = user_start + k * step, a = fc - step / 2, b = fc + step / 2;
-        while (j <= hi && f[j] < a) j++;
-        float best = -INFINITY;
-        int m = j;
-        while (m <= hi && f[m] < b) {
-            if (p[m] > best) best = p[m];
-            m++;
+    for (int k = 0; k < n; k++) out_pwr[k] = -INFINITY;
+    for (int i = lo; i <= hi; i++) {
+        if (!isfinite(p[i]) || !isfinite(f[i])) continue;
+        double x = (f[i] - user_start) / step + 0.5;
+        if (x < 0) continue;
+        int k = (int)x;
+        if (k >= n) continue;
+        if (p[i] > out_pwr[k]) out_pwr[k] = p[i];
+    }
+    for (int k = 0; k < n; k++) if (out_pwr[k] == -INFINITY) empty_bins++;
+    int prev = -1;
+    for (int k = 0; k <= n; k++) {
+        if (k < n && out_pwr[k] == -INFINITY) continue;
+        /* fill the gap (prev, k) */
+        for (int g = prev + 1; g < k; g++) {
+            if (prev < 0 && k >= n) out_pwr[g] = -120;
+            else if (prev < 0) out_pwr[g] = out_pwr[k];
+            else if (k >= n) out_pwr[g] = out_pwr[prev];
+            else out_pwr[g] = out_pwr[prev] + (out_pwr[k] - out_pwr[prev]) * (float)(g - prev) / (float)(k - prev);
         }
-        if (best == -INFINITY) {
-            int r = j > hi ? hi : j, l = r > lo ? r - 1 : r;
-            if (r == l || f[r] == f[l]) best = p[r];
-            else {
-                double t = (fc - f[l]) / (f[r] - f[l]);
-                if (t < 0) t = 0;
-                if (t > 1) t = 1;
-                best = (float)(p[l] + t * (p[r] - p[l]));
-            }
-        }
-        out_pwr[k] = best;
+        prev = k;
     }
 }
 
@@ -345,6 +406,8 @@ static void op_sweep(long id) {
     }
     int N = ti.FullsweepTracePoints, P = ti.PartialsweepTracePoints;
     int lo, hi, ok_hops = 0, last_err = 0;
+    int rej_index = 0, rej_dup = 0, rej_freq = 0, missing = 0;
+    int gain_min = 1 << 30, gain_max = -1;
     bool overflow = false;
     MeasAuxInfo_TypeDef aux;
     memset(&aux, 0, sizeof aux);
@@ -366,25 +429,79 @@ static void op_sweep(long id) {
         lo = 0, hi = N - 1, ok_hops = 1;
         aux.Temperature = 4210;
     } else {
+        /* Each hop is read into a scratch buffer far larger than the SDK says
+           it needs (as fReqon does), then placed by the hop index it reports. */
         int hop = 0, frame = 0;
-        for (int i = 0; i < ti.TotalHops; i++) {
-            int st = SWP_GetPartialSweep(&dev, nat_freq + i * P, nat_pwr + i * P, &hop, &frame, &aux);
-            /* -12: IF overflow, a warning; the data is still a sweep */
-            if (st == 0 || st == APIRETVAL_WARNING_IFOverflow) {
-                if (st != 0) overflow = true;
-                if (hop != i && hop >= 0 && hop < ti.TotalHops) {
-                    memmove(nat_freq + hop * P, nat_freq + i * P, sizeof(double) * P);
-                    memmove(nat_pwr + hop * P, nat_pwr + i * P, sizeof(float) * P);
-                }
-                ok_hops++;
-            } else {
-                last_err = st;
-            }
+        int cap = nat_cap, T = ti.TotalHops;
+        /* With spur rejection on, the SDK also hands out frames whose hop index
+           is past TotalHops, at unrelated frequencies (88-108 MHz, Standard:
+           hop 1 at 134 MHz, every other read). They are not part of the trace:
+           read until each hop 0..T-1 has arrived once and skip the rest. A hop
+           whose first frequency is not where the trace geometry puts it is
+           skipped too. */
+        static unsigned char *seen;
+        static int seen_cap;
+        if (seen_cap < T) {
+            seen = realloc(seen, T);
+            seen_cap = T;
         }
+        memset(seen, 0, T);
+        int max_reads = 4 * T + 8;
+        for (int r = 0; r < max_reads && ok_hops < T; r++) {
+            int st = SWP_GetPartialSweep(&dev, hop_freq, hop_pwr, &hop, &frame, &aux);
+            if (debug)
+                fprintf(stderr, "hop: r=%d st=%d hop=%d frame=%d f0=%.0f\n", r, st, hop, frame, hop_freq[0]);
+            /* -12: IF overflow, a warning; the data is still a sweep */
+            if (st != 0 && st != APIRETVAL_WARNING_IFOverflow) {
+                last_err = st;
+                if (r >= T) break; /* failing reads: do not spin */
+                continue;
+            }
+            if (hop < 0 || hop >= T) { rej_index++; continue; }
+            if (seen[hop]) { rej_dup++; continue; }
+            double expect = ti.StartFreq_Hz + (double)hop * P * ti.TraceBinBW_Hz;
+            if (ti.TraceBinBW_Hz > 0 && fabs(hop_freq[0] - expect) > 2 * ti.TraceBinBW_Hz) { rej_freq++; continue; }
+            if (st != 0) overflow = true;
+            if ((int)aux.GainPattern < gain_min) gain_min = aux.GainPattern;
+            if ((int)aux.GainPattern > gain_max) gain_max = aux.GainPattern;
+            int at = hop * P, n = P < HOP_SCRATCH ? P : HOP_SCRATCH;
+            if (at + n > cap) n = cap - at;
+            if (n > 0) {
+                memcpy(nat_freq + at, hop_freq, sizeof(double) * n);
+                memcpy(nat_pwr + at, hop_pwr, sizeof(float) * n);
+            }
+            seen[hop] = 1;
+            ok_hops++;
+        }
+        /* Hop h fills [h*P, h*P+P); the user's span runs from UserStartIndex in
+           the first hop to UserStopIndex in the last, so the full trace is
+           (hops-1)*P + UserStopIndex + 1 points. (htraapi-macos's swp_test
+           uses (N-P)+UserStopIndex, which goes negative for a single hop
+           whose partial trace is longer than the full one, e.g. 88-108 MHz.) */
         lo = (int)ti.UserStartIndex;
-        hi = (N - P) + (int)ti.UserStopIndex;
-        if (hi >= N) hi = N - 1;
+        hi = (ti.TotalHops - 1) * P + (int)ti.UserStopIndex;
+        if (hi > nat_cap - 1) hi = nat_cap - 1;
+        if (hi > N - 1 && N > 0) hi = N - 1;
         if (lo < 0 || lo > hi) lo = 0;
+        if (hi < lo) {
+            reply_err(id, -1, "empty trace from the SDK");
+            return;
+        }
+        /* A hop that did not arrive must not keep what its slot last held (an
+           earlier sweep, perhaps at other settings and frequencies): it takes
+           the previous sweep's levels at these settings, or is left empty and
+           interpolated over. */
+        for (int h = 0; h < T; h++) {
+            if (seen[h]) continue;
+            missing++;
+            int at = h * P, end = at + P;
+            if (end > cap) end = cap;
+            for (int i = at; i < end; i++) nat_pwr[i] = have_prev ? prev_pwr[i] : NAN;
+        }
+        /* The frequency axis is the trace geometry, not whatever the buffer
+           holds (fReqon does the same). */
+        if (ti.TraceBinBW_Hz > 0)
+            for (int i = lo; i <= hi; i++) nat_freq[i] = ti.StartFreq_Hz + (double)i * ti.TraceBinBW_Hz;
     }
     /* fReqon accepts a sweep with at most one hop missing, patched from the
        previous sweep; more than that is not a sweep */
@@ -399,15 +516,22 @@ static void op_sweep(long id) {
     for (int i = lo; i <= hi; i++) {
         if (!isfinite(nat_pwr[i]) || (nat_pwr[i] == 0 && ((i > lo && nat_pwr[i - 1] == 0) ||
                                                            (i < hi && nat_pwr[i + 1] == 0))))
-            nat_pwr[i] = have_prev ? prev_pwr[i] : -120;
+            nat_pwr[i] = have_prev ? prev_pwr[i] : NAN;
     }
     memcpy(prev_pwr + lo, nat_pwr + lo, sizeof(float) * (hi - lo + 1));
     have_prev = true;
     if (aux.Temperature) last_temp = aux.Temperature;
 
+    if (debug)
+        fprintf(stderr, "sweep: N=%d P=%d hops=%d ok=%d missing=%d rejected index/dup/freq=%d/%d/%d gain=%d..%d "
+                "ifagc=%.1f lo=%d hi=%d f[lo]=%.0f f[hi]=%.0f p[lo]=%.2f p[mid]=%.2f p[hi]=%.2f\n",
+                N, P, ti.TotalHops, ok_hops, missing, rej_index, rej_dup, rej_freq, gain_min, gain_max,
+                aux.IFAGCGain, lo, hi, nat_freq[lo], nat_freq[hi], nat_pwr[lo], nat_pwr[(lo + hi) / 2], nat_pwr[hi]);
     resample(nat_freq, nat_pwr, lo, hi);
-    printf("{\"id\":%ld,\"ok\":true,\"result\":{\"overflow\":%s,\"temperatureC\":%.2f,\"amps\":", id,
-           overflow ? "true" : "false", last_temp / 100.0);
+    printf("{\"id\":%ld,\"ok\":true,\"result\":{\"overflow\":%s,\"temperatureC\":%.2f,\"missingHops\":%d,"
+           "\"rejectedFrames\":%d,\"rejectedFreq\":%d,\"gainMin\":%d,\"gainMax\":%d,\"ifagcDb\":%.2f,\"emptyBins\":%d,\"amps\":", id,
+           overflow ? "true" : "false", last_temp / 100.0, missing, rej_index + rej_dup + rej_freq, rej_freq,
+           gain_max < 0 ? 0 : gain_min, gain_max < 0 ? 0 : gain_max, aux.IFAGCGain, empty_bins);
     print_amps(out_pwr, out_points);
     printf("}}\n");
     fflush(stdout);
@@ -444,6 +568,7 @@ static void close_device(void) {
 
 int main(void) {
     mock = getenv("HAROGIC_WORKER_MOCK") && *getenv("HAROGIC_WORKER_MOCK") == '1';
+    debug = getenv("HAROGIC_WORKER_DEBUG") && *getenv("HAROGIC_WORKER_DEBUG") == '1';
     setvbuf(stdout, NULL, _IOFBF, 1 << 16);
 
     size_t cap = 0;

@@ -11,11 +11,18 @@ SDK, libusb and the C++ runtime ship inside the plugin.
 
 - **USB analyzers** appear in SoundBase's device picker as soon as they are
   plugged in.
-- **Network analyzers**: in the plugin's settings, list their addresses in
-  *Network analyzer addresses*, e.g. `192.168.1.100, harogic-net1.local`
-  (add `:port` if the data port is not 5000). Each one that answers appears in
-  the picker. A network analyzer can also be added by hand with its address in
-  the device's *Address* field.
+- **Network analyzers** that announce themselves by mDNS (any analyzer with
+  the network settings service installed, by its name, e.g.
+  `Harogic-Net1.local`) appear in the picker by themselves, also when they are
+  on another subnet. Others: list their addresses or names in the plugin's
+  *Network analyzer addresses*, e.g. `192.168.1.100, harogic-net1.local` (add
+  `:port` if the data port is not 5000), or add one by hand with its address
+  or name in the device's *Address or name* field.
+- **Across subnets**, as in fReqon: an analyzer given by **name** whose IPv4
+  address is not on any of this Mac's networks is reached over IPv6
+  link-local, through the IPv6 relay of the analyzer's network settings
+  service (Harogic-R1000-Network-Server). Same cable or switch only; an IPv4
+  address typed in is used as it is.
 
 Close SAStudio4 or fReqon first: an analyzer serves one application at a time.
 
@@ -28,6 +35,14 @@ Beside SoundBase's own RBW and point count, each analyzer offers:
 | Preamplifier | Auto, Off, or Low/Medium/High gain on models that have them |
 | Detector | Peak (default), Average, RMS, Sample |
 | Spur rejection | Off, Standard (default), Enhanced |
+
+**Preamplifier High is easy to overload.** Next to a strong transmitter (a TV
+station in the band), the hop containing it clips, and that whole hop (tens of
+MHz) reads up to 30 dB too high on the clipped sweeps. The plugin reports this
+as an overload warning, critical once a quarter of sweeps clip. Auto or Medium
+gain avoids it; add attenuation only after turning the gain down. A bus-powered
+analyzer can also brown out at High gain with a narrow RBW (every hop fails
+with a bus error): run it from its power supply.
 
 RBW left on auto follows fReqon's rule: 10 kHz up to a 15 MHz span, 30 kHz to
 50 MHz, 50 kHz to 150 MHz, 100 kHz above.
@@ -72,8 +87,17 @@ survives a coarse point count.
 - **USB discovery** reads the IORegistry (`ioreg`), never the SDK, so it does
   not disturb an analyzer that is sweeping. Device ids are `usb:<serial>`, or
   `usb:loc-<locationID>` when the analyzer reports no serial.
-- **Network discovery** probes TCP port 9000 (the analyzer's system server),
-  never the data port the SDK uses.
+- **Network discovery** browses mDNS (`_workstation._tcp`, refreshed every
+  15 s in the background) and identifies analyzers by their factory name
+  (`67-<serial>`), their settings service (`/harogic-info` on port 8080, over
+  IPv4 or IPv6), or Harogic's system port 9000 — never the data port the SDK
+  uses, which would disturb a session.
+- **Routing** (`driver/net-route.js`, a port of fReqon's `net_route.py`): a
+  name resolves to its IPv4 address and the SDK's sockets are pinned to the
+  interface it is on (`HTRAAPI_NET_IF`), so a Wi-Fi network on the same subnet
+  cannot take the traffic. Off-subnet, the SDK connects to a forwarder on
+  127.0.0.1 that carries its connection to the analyzer's IPv6 link-local
+  address.
 - Calibration is cached in `~/Library/Application Support/htraapi`, shared
   with fReqon and other apps built on the Mac SDK.
 
@@ -97,7 +121,7 @@ SB_PLUGIN_DIRS="$HOME/Documents/Harogic Agent" open -a "SoundBase Desktop"
 | `HAROGIC_PLUGIN_MOCK=1` | two simulated analyzers; the real workers load their SDKs but open nothing |
 | `HAROGIC_PLUGIN_DEBUG=1` | worker stderr in the plugin log |
 | `HAROGIC_PLUGIN_WORKERS` | JSON list of `{ label, command, args?, env? }` replacing the shipped workers |
-| `HTRAAPI_NET_IF=en7` | pin the SDK's sockets to one interface (see the SDK README) |
+| `HAROGIC_PLUGIN_FORCE_LINK_LOCAL=1` | take the IPv6 link-local route for a name whenever there is one (tests the cross-subnet path on a same-subnet bench) |
 
 ### Rebuilding the workers
 

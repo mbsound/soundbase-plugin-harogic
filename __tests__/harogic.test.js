@@ -25,6 +25,7 @@ function useWorkers(builds) {
 }
 useWorkers([{ sdk: '0.55.100' }]);
 process.env.HAROGIC_PLUGIN_STALL_MS = '500';
+process.env.HAROGIC_PLUGIN_SWEEP_TIMEOUT_MS = '600';
 
 const { parseIoreg, parseAddresses } = await import('../driver/discovery.js');
 const { USB_PRODUCT, NETWORK_PRODUCT, autoRbwHz } = await import('../adapter.js');
@@ -64,7 +65,8 @@ async function addNetworkDevice() {
   return id;
 }
 
-await request('PUT', '/config', { values: { addresses: '127.0.0.1' } });
+// mDNS off: this suite must not find (or depend on) analyzers on the real network
+await request('PUT', '/config', { values: { addresses: '127.0.0.1', mdns: false } });
 
 // ---------------------------------------------------------------------------
 
@@ -179,10 +181,46 @@ test('out-of-range settings are clamped and echoed, not rejected', async () => {
   assert.equal(patched.body.rbwHz, 30_000);
 });
 
-test('an IF overflow is reported as an overload warning', async (t) => {
+test('a reference level the analyzer will not use is explained, and remembered', async () => {
+  const id = 'net:127.0.0.1';
+  const path = `${devicePath(id)}/configuration`;
+  const notice = async () => ((await deviceRow(id)).status.warnings ?? []).find((w) => w.id === 'ref-level');
+
+  // the fake analyzer settles anything below -50 dBm at -50
+  const low = await request('POST', path, {
+    startHz: 470e6, stopHz: 616e6, pointCount: 401,
+    controls: { refLevelDbm: -90, attenDb: 'auto', preamp: 'off' },
+  });
+  assert.equal(low.body.controls.refLevelDbm, -50);
+  assert.match((await notice())?.message ?? '', /-90 dBm is not available.*using -50 dBm/);
+
+  // a patch that does not touch the reference level asks for -90 again, not
+  // for the -50 the analyzer settled on last time
+  const patched = await request('POST', path, { controls: { detector: 'peak' } });
+  assert.equal(patched.body.controls.refLevelDbm, -50);
+  assert.match((await notice())?.message ?? '', /-90 dBm is not available/);
+
+  const ok = await request('POST', path, { controls: { refLevelDbm: -20 } });
+  assert.equal(ok.body.controls.refLevelDbm, -20);
+  assert.equal(await notice(), undefined);
+});
+
+test('a preamplifier the analyzer overrides is explained', async () => {
   const id = 'net:127.0.0.1';
   await request('POST', `${devicePath(id)}/configuration`, {
     startHz: 470e6, stopHz: 616e6, pointCount: 401,
+    controls: { preamp: 'auto', attenDb: '30', refLevelDbm: -20 },
+  });
+  const notice = ((await deviceRow(id)).status.warnings ?? []).find((w) => w.id === 'preamp');
+  assert.match(notice?.message ?? '', /turned the preamplifier off \(asked for auto\)\. With 30 dB of attenuation set by hand/);
+  await request('POST', `${devicePath(id)}/configuration`, { controls: { attenDb: 'auto' } });
+  assert.equal(((await deviceRow(id)).status.warnings ?? []).find((w) => w.id === 'preamp'), undefined);
+});
+
+test('an IF overflow is reported as an overload warning', async (t) => {
+  const id = 'net:127.0.0.1';
+  await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 470e6, stopHz: 616e6, pointCount: 401, controls: { preamp: 'high' },
   });
   await request('POST', `${devicePath(id)}/sweep/start`);
   t.after(() => request('POST', `${devicePath(id)}/sweep/stop`));
@@ -195,6 +233,10 @@ test('an IF overflow is reported as an overload warning', async (t) => {
   const overload = warnings.find((w) => w.id === 'overload');
   assert.ok(overload, JSON.stringify(warnings));
   assert.equal(overload.severity, 'warning');
+  // the fake overloads one sweep in five: the share is reported, with advice
+  // that fits the settings (here the preamplifier is on High)
+  assert.match(overload.message, /^Input overload on \d+% of sweeps/);
+  assert.match(overload.message, /Turn the preamplifier down or off/);
 });
 
 test('a firmware mismatch moves on to the next SDK build', async () => {
@@ -267,6 +309,24 @@ test('a worker that dies mid-sweep fails the device, and the next request reopen
   });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.equal((await deviceRow(id)).status.status, 'ok');
+});
+
+test('an analyzer that stops answering mid-sweep is reported in words a person can act on', async () => {
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_HANG_AFTER: '3' } }]);
+  const id = await addNetworkDevice();
+  await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201,
+  });
+  await request('POST', `${devicePath(id)}/sweep/start`);
+  let row;
+  const deadline = Date.now() + 4_000;
+  do {
+    await delay(50);
+    row = await deviceRow(id);
+  } while (row.status.status !== 'failed' && Date.now() < deadline);
+  assert.equal(row.status.status, 'failed');
+  assert.match(row.status.message, /stopped answering \(sweep did not answer within 1 s\)\. It may have been unplugged/);
+  assert.doesNotMatch(row.status.message, /SIGKILL/);
 });
 
 test('a USB analyzer that is not plugged in says so', async () => {
