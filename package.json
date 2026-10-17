@@ -1,8 +1,20 @@
 {
   "name": "soundbase-plugin-harogic",
   "version": "0.1.0",
-  "description": "SoundBase plugin: Harogic Spectrum Analyzers.",
-  "license": "BUSL-1.1",
+  "description": "SoundBase plugin for Harogic spectrum analyzers (USB and network) on Apple Silicon Macs.",
+  "license": "MIT",
+  "author": {
+    "name": "Matt Bell",
+    "email": "matt@mbsound.org"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mbsound/soundbase-plugin-harogic.git"
+  },
+  "homepage": "https://github.com/mbsound/soundbase-plugin-harogic#readme",
+  "bugs": {
+    "url": "https://github.com/mbsound/soundbase-plugin-harogic/issues"
+  },
   "type": "module",
   "main": "main.js",
   "engines": {

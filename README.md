@@ -1,5 +1,8 @@
 # Harogic analyzers for SoundBase
 
+Maintained by Matt Bell ([matt@mbsound.org](mailto:matt@mbsound.org)). Issues and
+pull requests: [github.com/mbsound/soundbase-plugin-harogic](https://github.com/mbsound/soundbase-plugin-harogic).
+
 A SoundBase plugin that brings Harogic spectrum analyzers into SoundBase's live
 scan, over **USB** and over the **network** (Harogic network analyzers such as
 the R1000), using the [Harogic SDK for macOS](https://github.com/mbsound/Harogic-Mac-SDK).
