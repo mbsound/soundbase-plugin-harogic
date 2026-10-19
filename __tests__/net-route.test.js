@@ -4,8 +4,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, connect } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import {
   interfacesFor,
+  rememberRoute,
   localInterfaces,
   parseDnsSdBrowse,
   resolveTarget,
@@ -55,6 +57,27 @@ test('an IPv4 address on no local network says how to reach it instead', async (
 
 test('an unknown name is an error, not a hang', async () => {
   await assert.rejects(resolveTarget('no-such-analyzer.invalid'), /not known/);
+});
+
+test('a name that stops resolving falls back to its last route, if that still answers as a Harogic', async (t) => {
+  // a stand-in for the analyzer's settings service, on the loopback
+  const svc = createHttpServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ harogic: true, device_id: '67-test', name: 'Test' }));
+  });
+  await new Promise((r) => svc.listen(8080, '127.0.0.1', r));
+  t.after(() => svc.close());
+
+  rememberRoute('blipped-analyzer.invalid', { ip: '127.0.0.1', netIf: 'lo0' });
+  const route = await resolveTarget('blipped-analyzer.invalid');
+  assert.equal(route.ip, '127.0.0.1');
+  assert.match(route.note, /did not resolve; using its last known address/);
+
+  // a remembered route that no longer answers is not trusted
+  rememberRoute('gone-analyzer.invalid', { ip: '127.0.0.1', netIf: 'lo0' });
+  svc.close();
+  await new Promise((r) => svc.once('close', r));
+  await assert.rejects(resolveTarget('gone-analyzer.invalid'), /not known/);
 });
 
 test('the forwarder carries an IPv4 connection to an IPv6 address, both ways', async (t) => {

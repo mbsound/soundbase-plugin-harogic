@@ -118,12 +118,45 @@ export async function linkLocalRoute(host, port, { addresses, linkLocal } = {}) 
   return found ? { host: found.addr, interface: found.ifname, info: answers[candidates.indexOf(found)] } : null;
 }
 
+// The last route each name was reached by. mDNS can fail to answer for a
+// few seconds after a link blip (seen on 2026-10-19: the analyzer stalled,
+// and for 10 s its name was "not known" although it was back), and the host
+// gives up on a device after a few retries. A remembered route is used only
+// after the address is checked to still answer as a Harogic analyzer.
+const lastRoutes = new Map();
+const ROUTE_MEMORY_MS = 60 * 60 * 1000;
+
+/** Exported for the tests. */
+export function rememberRoute(host, route) {
+  lastRoutes.set(host.toLowerCase(), { ...route, at: Date.now() });
+}
+
+async function rememberedRoute(host, port) {
+  const r = lastRoutes.get(host.toLowerCase());
+  if (!r || Date.now() - r.at > ROUTE_MEMORY_MS) return null;
+  if (r.linkLocal) {
+    const info = await harogicInfo(r.linkLocal.host);
+    if (!info) return null;
+    return { ip: '127.0.0.1', port, linkLocal: { ...r.linkLocal, info },
+      note: `${host} did not resolve; using its last known IPv6 link-local address on ${r.linkLocal.interface}` };
+  }
+  if (r.ip && ((await harogicInfo(r.ip)) || (await tcpAnswers(r.ip, SYSTEM_PORT))))
+    return { ip: r.ip, port, netIf: r.netIf, note: `${host} did not resolve; using its last known address ${r.ip}` };
+  return null;
+}
+
 /**
  * Where the SDK should connect for an analyzer given as an address or a name:
  * { ip, port, netIf?, linkLocal?, note }. With linkLocal set, the caller
  * starts a forwarder to linkLocal.host and points the SDK at it.
  */
 export async function resolveTarget(target, port = DATA_PORT) {
+  const route = await resolveFresh(target, port);
+  if (!isIPv4(target.trim())) rememberRoute(target.trim(), route);
+  return route;
+}
+
+async function resolveFresh(target, port) {
   const host = target.trim();
   const { v4, linkLocal } = localInterfaces();
   if (isIPv4(host)) {
@@ -160,7 +193,11 @@ export async function resolveTarget(target, port = DATA_PORT) {
         (ip && on.length === 0 ? ` (its address ${ip} is not on this computer's networks)` : ''),
     };
   }
-  if (!ip) throw new Error(`"${host}" is not known on this computer's networks`);
+  if (!ip) {
+    const remembered = await rememberedRoute(host, port);
+    if (remembered) return remembered;
+    throw new Error(`"${host}" is not known on this computer's networks`);
+  }
   return { ip, port, note: `${host} is ${ip}, which is not on any of this computer's networks, and it does not answer over IPv6 link-local` };
 }
 
