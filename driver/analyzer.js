@@ -180,6 +180,8 @@ function explainOpenFailure(describe, failures) {
     );
   }
   const last = failures.at(-1)?.err;
+  if (failures.some((f) => f.err.code === 10054))
+    return `${describe}: the connection was closed before the analyzer answered. Check that this is the address of a Harogic network analyzer and that it is powered. A USB analyzer is chosen from the device list, not added by address.`;
   if (failures.some((f) => f.err.code === 10060))
     return `${describe}: the analyzer did not answer on its data port. Check that it is connected and that no other application is using it.`;
   if (last?.timeout)

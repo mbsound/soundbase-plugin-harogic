@@ -156,8 +156,17 @@ export async function resolveTarget(target, port = DATA_PORT) {
   return route;
 }
 
+// A full dotted IPv4 address, or a host name with a letter in it. "1" or
+// "192.168.1" are accepted by the resolver as 0.0.0.1 and 192.168.0.1, which
+// nobody means; a user who typed them gets told, not a connection to nowhere.
+export function looksLikeAddressOrName(host) {
+  return isIPv4(host) || /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?$/i.test(host) && /[a-z]/i.test(host);
+}
+
 async function resolveFresh(target, port) {
   const host = target.trim();
+  if (!looksLikeAddressOrName(host))
+    throw new Error(`"${host}" is not an IPv4 address (four numbers, e.g. 192.168.1.100) or a host name (e.g. harogic-net1.local)`);
   const { v4, linkLocal } = localInterfaces();
   if (isIPv4(host)) {
     const on = interfacesFor(host, v4);

@@ -55,6 +55,14 @@ test('an IPv4 address on no local network says how to reach it instead', async (
   assert.match(route.note, /not on any of this computer's networks/);
 });
 
+test('a bare number or partial address is refused with an explanation, not resolved to 0.0.0.1', async () => {
+  for (const bad of ['1', '192.168.1', '192.168.1.', '-x']) {
+    await assert.rejects(resolveTarget(bad), /not an IPv4 address .* or a host name/, bad);
+  }
+  for (const ok of ['192.168.1.100', 'harogic-net1.local', 'analyzer', 'a-b.example.com'])
+    assert.doesNotThrow(() => resolveTarget(ok).catch(() => {}), ok);
+});
+
 test('an unknown name is an error, not a hang', async () => {
   await assert.rejects(resolveTarget('no-such-analyzer.invalid'), /not known/);
 });

@@ -329,6 +329,17 @@ test('an analyzer that stops answering mid-sweep is reported in words a person c
   assert.doesNotMatch(row.status.message, /SIGKILL/);
 });
 
+test('a network device added with a nonsense address says what an address looks like', async () => {
+  useWorkers([{ sdk: '0.55.100' }]);
+  const id = 'net:1';
+  await request('POST', '/devices', { id, product: NETWORK_PRODUCT, config: { host: '1' } });
+  const applied = await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201,
+  });
+  assert.equal(applied.status, 503);
+  assert.match((await deviceRow(id)).status.message, /"1" is not an IPv4 address .* or a host name/);
+});
+
 test('a USB analyzer that is not plugged in says so', async () => {
   useWorkers([{ sdk: '0.55.100' }]);
   const id = 'usb:not-plugged-in';
