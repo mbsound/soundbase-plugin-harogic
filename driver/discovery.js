@@ -27,6 +27,8 @@ const PROBE_TIMEOUT_MS = 800;
  * @returns {Promise<{ locationId: string, index: number, product: string, serial?: string }[]>}
  */
 export async function listUsbAnalyzers() {
+  // tests: a fixed list, so what is plugged into the developer's Mac does not matter
+  if (process.env.HAROGIC_PLUGIN_USB_LIST) return JSON.parse(process.env.HAROGIC_PLUGIN_USB_LIST);
   if (process.platform !== 'darwin') return [];
   const text = await new Promise((resolve) => {
     execFile('/usr/sbin/ioreg', ['-p', 'IOUSB', '-l', '-w0'], { timeout: 3_000, maxBuffer: 8 << 20 },

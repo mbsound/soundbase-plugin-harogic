@@ -74,15 +74,15 @@ const simulated = () => process.env.HAROGIC_PLUGIN_MOCK === '1';
 export async function discoverDevices(pluginConfig = {}) {
   if (simulated()) {
     return [
-      { id: 'usb:simulated', name: 'Harogic USB (simulated)', product: USB_PRODUCT,
+      { id: 'usb:simulated', name: 'Harogic USB Analyzer · simulated', product: USB_PRODUCT,
         transport: { kind: 'usb', path: 'simulated' } },
-      { id: 'net:simulated', name: 'Harogic network (simulated)', product: NETWORK_PRODUCT,
+      { id: 'net:simulated', name: 'Harogic Network Analyzer · simulated', product: NETWORK_PRODUCT,
         transport: { kind: 'network', host: 'simulated', port: DEFAULT_DATA_PORT } },
     ];
   }
   const usb = (await listUsbAnalyzers()).map((a) => ({
     id: usbId(a),
-    name: `Harogic ${a.product}`,
+    name: `Harogic USB Analyzer · ${a.serial ? `SN ${a.serial.replace(/^\d+_/, '')}` : `location ${a.locationId}`}`,
     product: USB_PRODUCT,
     transport: { kind: 'usb', path: a.serial ?? `location ${a.locationId}` },
   }));
@@ -93,7 +93,7 @@ export async function discoverDevices(pluginConfig = {}) {
       if (!openHosts.has(host) && !(await probeHost(host))) return null;
       return {
         id: netId(host, port),
-        name: `Harogic network analyzer (${host})`,
+        name: `Harogic Network Analyzer · ${host}`,
         product: NETWORK_PRODUCT,
         transport: { kind: 'network', host, port },
       };
@@ -107,7 +107,7 @@ export async function discoverDevices(pluginConfig = {}) {
       if (known.has(a.host.toLowerCase()) || (a.ip && known.has(a.ip))) continue;
       listed.push({
         id: netId(a.host, DEFAULT_DATA_PORT),
-        name: `${a.name} (Harogic network analyzer${a.via === 'ipv6' ? ', other subnet, over IPv6' : ''})`,
+        name: `Harogic Network Analyzer · ${a.name}${a.via === 'ipv6' ? ' (other subnet, over IPv6)' : ''}`,
         product: NETWORK_PRODUCT,
         transport: { kind: 'network', host: a.host, port: DEFAULT_DATA_PORT },
       });
@@ -212,16 +212,25 @@ class HarogicAdapter {
     };
   }
 
-  /** Where this device is: from device.config, or from the id it was discovered under. */
+  /**
+   * Where this device is. The product decides the path: SoundBase offers
+   * every product "by address" (the address fields are plugin-wide in the
+   * contract), so a USB analyzer can arrive with something typed in the
+   * address field, which must not turn it into a network device.
+   */
   async #target() {
     const config = this.device.config ?? {};
     const id = this.device.id ?? '';
-    if (this.device.product === NETWORK_PRODUCT || id.startsWith('net:')) {
+    const product = this.device.product;
+    const isNetwork = product === NETWORK_PRODUCT || (product !== USB_PRODUCT && id.startsWith('net:'));
+    if (isNetwork) {
       let host = config.host?.trim();
       let port = Number(config.port) || DEFAULT_DATA_PORT;
       if (!host) {
         const m = /^net:(.+?)(?::(\d+))?$/.exec(id);
-        if (!m) throw new Error(`device ${id} has no address: set "host" in its configuration`);
+        if (!m)
+          throw new Error('This network analyzer has no address. Choose it from the device list, where analyzers ' +
+            'on the network appear by themselves, or list its address under the plugin\'s "Network analyzers to look for".');
         host = m[1];
         port = Number(m[2]) || DEFAULT_DATA_PORT;
       }
@@ -245,11 +254,24 @@ class HarogicAdapter {
         env: route.netIf ? { HTRAAPI_NET_IF: route.netIf } : {},
       };
     }
+    // USB
+    if (config.host?.trim())
+      logger('info', `USB analyzer ${id}: the address "${config.host.trim()}" in its settings is ignored; ` +
+        'USB analyzers are found on the USB bus, not by address.');
     if (simulated()) return { key: id, describe: 'USB analyzer', target: { iface: 'usb', index: 0 } };
     const found = await listUsbAnalyzers();
-    const match = found.find((a) => usbId(a) === id) ?? (found.length === 1 && !id.startsWith('usb:') ? found[0] : null);
-    if (!match)
-      throw new Error(`USB analyzer ${id.replace(/^usb:/, '')} is not connected. Check the cable and that the analyzer is powered.`);
+    // discovered: by its serial; added by hand: the connected analyzer
+    const match = found.find((a) => usbId(a) === id) ?? (id.startsWith('usb:') && found.some((a) => a.serial) ? null : found[0]);
+    if (!match) {
+      if (found.length === 0)
+        throw new Error('No Harogic USB analyzer is connected. Check the cable and that the analyzer is powered; ' +
+          'it appears in the device list by itself once it is.');
+      throw new Error(`USB analyzer ${id.replace(/^usb:/, '')} is not connected (connected: ` +
+        `${found.map((a) => a.serial ?? a.locationId).join(', ')}). Check the cable and that the analyzer is powered.`);
+    }
+    if (usbId(match) !== id)
+      logger('info', `USB analyzer ${id}: using the connected analyzer ${match.serial ?? match.locationId}` +
+        (found.length > 1 ? ` (${found.length} connected; choose one from the device list to pick another)` : ''));
     // the USB serial ends in the analyzer's UID: let the worker check it
     const uid = /([0-9a-f]{16})$/i.exec(match.serial ?? '')?.[1];
     return {

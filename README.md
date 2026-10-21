@@ -12,20 +12,15 @@ SDK, libusb and the C++ runtime ship inside the plugin.
 
 ## Using it
 
-- **USB analyzers** appear in SoundBase's device picker as soon as they are
-  plugged in.
-- **Network analyzers** that announce themselves by mDNS (any analyzer with
-  the network settings service installed, by its name, e.g.
-  `Harogic-Net1.local`) appear in the picker by themselves, also when they are
-  on another subnet. Others: list their addresses or names in the plugin's
-  *Network analyzer addresses*, e.g. `192.168.1.100, harogic-net1.local` (add
-  `:port` if the data port is not 5000), or add one by hand with its address
-  or name in the device's *Address or name* field.
-- **Across subnets**, as in fReqon: an analyzer given by **name** whose IPv4
-  address is not on any of this Mac's networks is reached over IPv6
-  link-local, through the IPv6 relay of the analyzer's network settings
-  service (Harogic-R1000-Network-Server). Same cable or switch only; an IPv4
-  address typed in is used as it is.
+- The device picker lists only analyzers that are present, named by how they
+  are reached: **Harogic USB Analyzer · SN …** for one on USB, **Harogic Network
+  Analyzer · name** for one on the network. There is nothing to add by hand.
+- **Network analyzers** with the network settings service installed announce
+  themselves (mDNS) and appear by themselves, also from another subnet over
+  IPv6 link-local (same cable or switch). For one that does not announce
+  itself, list its address or name under the plugin's *Network analyzers to
+  look for*, e.g. `192.168.1.100, harogic-net1.local` (add `:port` if the data
+  port is not 5000).
 
 Close SAStudio4 or fReqon first: an analyzer serves one application at a time.
 

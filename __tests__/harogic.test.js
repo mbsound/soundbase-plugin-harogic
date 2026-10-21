@@ -340,13 +340,39 @@ test('a network device added with a nonsense address says what an address looks 
   assert.match((await deviceRow(id)).status.message, /"1" is not an IPv4 address .* or a host name/);
 });
 
+test('a USB analyzer added by address ignores the address and opens the connected analyzer', async () => {
+  useWorkers([{ sdk: '0.55.100' }]);
+  process.env.HAROGIC_PLUGIN_USB_LIST = JSON.stringify([
+    { locationId: '01200000', index: 0, product: 'Spectrum Analyzer', serial: '066_0000000000c0ffee' },
+  ]);
+  const id = 'harogic-usb-by-address-1';
+  await request('POST', '/devices', { id, product: USB_PRODUCT, config: { host: '1', port: 5000 } });
+  const applied = await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201,
+  });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal((await deviceRow(id)).status.status, 'ok');
+});
+
 test('a USB analyzer that is not plugged in says so', async () => {
   useWorkers([{ sdk: '0.55.100' }]);
+  process.env.HAROGIC_PLUGIN_USB_LIST = '[]';
   const id = 'usb:not-plugged-in';
   await request('POST', '/devices', { id, product: USB_PRODUCT });
   const applied = await request('POST', `${devicePath(id)}/configuration`, {
     startHz: 88e6, stopHz: 108e6, pointCount: 201,
   });
   assert.equal(applied.status, 503);
-  assert.match((await deviceRow(id)).status.message, /is not connected/);
+  assert.match((await deviceRow(id)).status.message, /No Harogic USB analyzer is connected/);
+});
+
+test('a network analyzer with no address asks for one', async () => {
+  useWorkers([{ sdk: '0.55.100' }]);
+  const id = 'harogic-net-by-address-empty';
+  await request('POST', '/devices', { id, product: NETWORK_PRODUCT, config: { host: '', port: 5000 } });
+  const applied = await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201,
+  });
+  assert.equal(applied.status, 503);
+  assert.match((await deviceRow(id)).status.message, /has no address\. Choose it from the device list/);
 });
