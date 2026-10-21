@@ -9,6 +9,8 @@
 //   FAKE_STALL_FILE     a file holding a count: while it is above zero, open
 //                       decrements it and then never answers (a stalled
 //                       network handshake)
+//   FAKE_FAIL_OPENS_FILE a file holding a count: while it is above zero, open
+//                       decrements it and answers -8 (bus error: still starting)
 //   FAKE_DIE_AFTER      exit abruptly after this many sweeps (cable pulled)
 //   FAKE_HANG_AFTER     stop answering after this many sweeps (network gone)
 //   FAKE_LOG_FILE       append every request's op here, one per line
@@ -48,6 +50,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return ok({ api: 1, sdk, mock: true });
     case 'open':
       if (stallOnce()) return; // never answers
+      if (env.FAKE_FAIL_OPENS_FILE) {
+        const left = Number(readFileSync(env.FAKE_FAIL_OPENS_FILE, 'utf8')) || 0;
+        if (left > 0) { writeFileSync(env.FAKE_FAIL_OPENS_FILE, String(left - 1)); return fail(-8, 'Device_Open returned -8 (firmware 0x0)'); }
+      }
       if (!opensWith.includes(sdk)) return fail(-49, 'Device_Open returned -49 (firmware 0x3768)');
       open = true;
       return ok({ status: 0, model: req.iface === 'eth' ? 0x43 : 0x42, uid: '0000000000c0ffee',

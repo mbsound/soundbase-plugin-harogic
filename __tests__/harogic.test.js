@@ -26,6 +26,7 @@ function useWorkers(builds) {
 useWorkers([{ sdk: '0.55.100' }]);
 process.env.HAROGIC_PLUGIN_STALL_MS = '500';
 process.env.HAROGIC_PLUGIN_SWEEP_TIMEOUT_MS = '600';
+process.env.HAROGIC_PLUGIN_OPEN_RETRY_MS = '100';
 
 const { parseIoreg, parseAddresses } = await import('../driver/discovery.js');
 const { USB_PRODUCT, NETWORK_PRODUCT, autoRbwHz } = await import('../adapter.js');
@@ -338,6 +339,34 @@ test('a network device added with a nonsense address says what an address looks 
   });
   assert.equal(applied.status, 503);
   assert.match((await deviceRow(id)).status.message, /"1" is not an IPv4 address .* or a host name/);
+});
+
+test('a USB open that fails while the analyzer is still starting up is retried', async () => {
+  const fails = join(scratch, 'fail-opens');
+  writeFileSync(fails, '2'); // the first two opens answer -8, the third succeeds
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_FAIL_OPENS_FILE: fails } }]);
+  process.env.HAROGIC_PLUGIN_USB_LIST = JSON.stringify([
+    { locationId: '01200000', index: 0, product: 'Spectrum Analyzer', serial: '066_0000000000c0ffee' },
+  ]);
+  const id = 'usb:066_0000000000c0ffee';
+  await request('POST', '/devices', { id, product: USB_PRODUCT });
+  const applied = await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201,
+  });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  assert.equal(readFileSync(fails, 'utf8'), '0');
+
+  // a firmware mismatch is not retried
+  writeFileSync(fails, '0');
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_OPENS_WITH: 'none', FAKE_LOG_FILE: join(scratch, 'mismatch.log') } }]);
+  writeFileSync(join(scratch, 'mismatch.log'), '');
+  const id2 = 'usb:066_0000000000c0ffe2';
+  process.env.HAROGIC_PLUGIN_USB_LIST = JSON.stringify([
+    { locationId: '01300000', index: 0, product: 'Spectrum Analyzer', serial: '066_0000000000c0ffe2' },
+  ]);
+  await request('POST', '/devices', { id: id2, product: USB_PRODUCT });
+  assert.equal((await request('POST', `${devicePath(id2)}/configuration`, { startHz: 88e6, stopHz: 108e6, pointCount: 201 })).status, 503);
+  assert.equal(readFileSync(join(scratch, 'mismatch.log'), 'utf8').trim().split('\n').length, 1, 'one open attempt only');
 });
 
 test('a USB analyzer added by address ignores the address and opens the connected analyzer', async () => {

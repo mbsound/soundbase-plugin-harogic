@@ -21,6 +21,12 @@ const NET_OPEN_ATTEMPTS = 3;
 // USB: the SDK reads calibration from flash on a first open, which is slow
 const USB_OPEN_TIMEOUT_MS = 45_000;
 const CONFIG_TIMEOUT_MS = 15_000;
+// Device_Open can fail outright while the analyzer is still re-initialising
+// (after a replug, a brown-out, or another application letting go of it):
+// -8 BusError, -1. fReqon retries up to 8 times; the device is usually back
+// within a few seconds. A firmware mismatch (-49) is final.
+const OPEN_ATTEMPTS = Number(process.env.HAROGIC_PLUGIN_OPEN_ATTEMPTS) || 5;
+const OPEN_RETRY_MS = Number(process.env.HAROGIC_PLUGIN_OPEN_RETRY_MS) || 1_000;
 
 const versionKey = (label) =>
   label.replace(/^sdk/, '').split('.').map((n) => n.padStart(6, '0')).join('.');
@@ -110,7 +116,7 @@ export class HarogicAnalyzer {
   }
 
   async #openWith(build) {
-    const attempts = this.target.iface === 'eth' ? NET_OPEN_ATTEMPTS : 1;
+    const attempts = this.target.iface === 'eth' ? NET_OPEN_ATTEMPTS : OPEN_ATTEMPTS;
     let last;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       this.worker = new WorkerClient({ ...build, env: { ...build.env, ...this.env }, log: this.log }).start();
@@ -127,11 +133,15 @@ export class HarogicAnalyzer {
       } catch (err) {
         last = err;
         await this.#dropWorker();
-        if (!(err instanceof WorkerError && err.timeout)) throw err;
-        this.log(
-          'warn',
-          `${this.describe}: connection stalled during open; reconnecting (${attempt}/${attempts})`
-        );
+        if (err.code === FIRMWARE_MISMATCH || attempt === attempts) throw err;
+        if (err instanceof WorkerError && err.timeout) {
+          this.log('warn', `${this.describe}: connection stalled during open; reconnecting (${attempt}/${attempts})`);
+        } else if (this.target.iface === 'usb') {
+          this.log('warn', `${this.describe}: open failed (${err.message}); the analyzer may still be starting up, retrying in ${OPEN_RETRY_MS / 1000} s (${attempt}/${attempts})`);
+          await new Promise((r) => setTimeout(r, OPEN_RETRY_MS));
+        } else {
+          throw err;
+        }
       }
     }
     throw last;
