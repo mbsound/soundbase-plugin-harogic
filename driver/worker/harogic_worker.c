@@ -450,7 +450,8 @@ static void op_sweep(long id) {
         for (int r = 0; r < max_reads && ok_hops < T; r++) {
             int st = SWP_GetPartialSweep(&dev, hop_freq, hop_pwr, &hop, &frame, &aux);
             if (debug)
-                fprintf(stderr, "hop: r=%d st=%d hop=%d frame=%d f0=%.0f\n", r, st, hop, frame, hop_freq[0]);
+                fprintf(stderr, "hop: r=%d st=%d hop=%d frame=%d f0=%.0f gain=%u maxdbm=%.1f\n", r, st, hop, frame,
+                        hop_freq[0], (unsigned)aux.GainPattern, aux.MaxPower_dBm);
             /* -12: IF overflow, a warning; the data is still a sweep */
             if (st != 0 && st != APIRETVAL_WARNING_IFOverflow) {
                 last_err = st;
