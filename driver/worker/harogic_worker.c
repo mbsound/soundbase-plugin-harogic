@@ -584,6 +584,20 @@ int main(void) {
         else if (!strcmp(op, "config")) op_config(id, line);
         else if (!strcmp(op, "sweep")) op_sweep(id);
         else if (!strcmp(op, "status")) op_status(id);
+        else if (!strcmp(op, "freqplan")) {
+            /* diagnostics: the SDK's RF band plan from startHz to stopHz in stepHz */
+            double f0 = get_num(line, "startHz", 470e6), f1 = get_num(line, "stopHz", 616e6), st = get_num(line, "stepHz", 2e6);
+            printf("{\"id\":%ld,\"ok\":true,\"result\":{\"plan\":[", id);
+            bool first = true;
+            for (double f = f0; f <= f1 && !mock; f += st) {
+                uint8_t rfb = 0, convert = 0; double if1 = 0, im = 0, rflo = 0, iflo = 0, if2 = 0;
+                Device_GetFreqPlanning(&dev, f, &rfb, &convert, &if1, &im, &rflo, &iflo, &if2);
+                printf("%s{\"hz\":%.0f,\"band\":%u,\"convert\":%u,\"if1\":%.0f,\"rflo\":%.0f}", first ? "" : ",", f, rfb, convert, if1, rflo);
+                first = false;
+            }
+            printf("]}}\n");
+            fflush(stdout);
+        }
         else if (!strcmp(op, "close")) {
             close_device();
             printf("{\"id\":%ld,\"ok\":true,\"result\":{}}\n", id);
