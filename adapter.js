@@ -21,7 +21,7 @@ export const NETWORK_PRODUCT = 'plugin:harogic/network';
 
 const MIN_FREQUENCY_HZ = 9_000;
 const MAX_FREQUENCY_HZ = 6_300_000_000;
-const RBW_HZ = [1_000, 3_000, 10_000, 30_000, 100_000, 300_000, 1_000_000];
+const RBW_HZ = [1_000, 3_000, 5_000, 10_000, 30_000, 50_000, 100_000, 300_000, 1_000_000];
 const MIN_POINTS = 2;
 const MAX_POINTS = 32_001;
 const DEFAULT_POINTS = 1_001;
@@ -44,6 +44,7 @@ const WARNINGS_INTERVAL_MS = 500;
 const PREAMP = { auto: 0, off: 1, low: 2, medium: 3, high: 4 };
 const DETECTOR = { peak: 1, average: 2, rms: 6, sample: 0 };
 const SPUR = { off: 0, standard: 1, enhanced: 2 };
+const VBW = { rbw: 1, tenth: 0.1, hundredth: 0.01 };
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -185,7 +186,7 @@ class HarogicAdapter {
         controls: [
           { id: 'refLevelDbm', type: 'number', label: 'Reference level', unit: 'dBm',
             default: -20, min: -100, max: 20, step: 1,
-            help: 'Sets the analyzer’s gain while attenuation is on Auto; raise it if strong nearby transmitters cause overload warnings. With attenuation set by hand, the attenuation decides the reference level, and the preamplifier limits the highest one. The analyzer’s actual value is shown in its notices.' },
+            help: 'Sets the analyzer’s gain while attenuation is on Auto, and with it the noise floor: every 10 dB lower here lowers the floor by about 6 dB (measured: −20 → floor −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz) until strong signals overload the input, which the overload warning reports. Lower it until the warning appears, then back off. With attenuation set by hand the attenuation decides the reference level instead.' },
           { id: 'attenDb', type: 'dropdown', label: 'Attenuation', default: 'auto',
             choices: [{ id: 'auto', label: 'Auto' },
               ...[0, 5, 10, 15, 20, 25, 30].map((db) => ({ id: String(db), label: `${db} dB` }))] },
@@ -197,6 +198,10 @@ class HarogicAdapter {
           { id: 'detector', type: 'dropdown', label: 'Detector', default: 'peak',
             choices: [{ id: 'peak', label: 'Peak' }, { id: 'average', label: 'Average' },
               { id: 'rms', label: 'RMS' }, { id: 'sample', label: 'Sample' }] },
+          { id: 'vbw', type: 'dropdown', label: 'Video bandwidth', default: 'rbw',
+            choices: [{ id: 'rbw', label: '= RBW (fastest)' }, { id: 'tenth', label: 'RBW ÷ 10 (SAStudio’s default)' },
+              { id: 'hundredth', label: 'RBW ÷ 100' }],
+            help: 'Averages the noise on the trace: a narrower video bandwidth lowers the displayed noise by about 1 dB per step and smooths it, at the cost of sweep rate (RBW ÷ 10 roughly halves it, ÷ 100 is ten times slower). Signals are not affected.' },
           { id: 'spurRejection', type: 'dropdown', label: 'Spur rejection', default: 'standard',
             choices: [{ id: 'off', label: 'Off' }, { id: 'standard', label: 'Standard' },
               { id: 'enhanced', label: 'Enhanced' }],
@@ -315,6 +320,7 @@ class HarogicAdapter {
       preamp: choice(PREAMP, c.preamp, 'auto'),
       detector: choice(DETECTOR, c.detector, 'peak'),
       spurRejection: choice(SPUR, c.spurRejection, 'standard'),
+      vbw: choice(VBW, c.vbw, 'rbw'),
     };
 
     this.generation += 1;
@@ -325,6 +331,7 @@ class HarogicAdapter {
       preamp: PREAMP[controls.preamp],
       detector: DETECTOR[controls.detector],
       spur: SPUR[controls.spurRejection],
+      vbwRatio: VBW[controls.vbw],
     });
 
     // the analyzer settles the reference level; report what it chose
@@ -350,7 +357,7 @@ class HarogicAdapter {
         'and was configured with its defaults for everything but the span and RBW.');
     logger('info', `${this.analyzer.describe}: ${(startHz / 1e6).toFixed(3)}–${(stopHz / 1e6).toFixed(3)} MHz, ` +
       `${pointCount} points, RBW ${Math.round(applied.rbwHz)} Hz; asked ref ${controls.refLevelDbm} dBm, atten ${controls.attenDb}, ` +
-      `preamp ${controls.preamp}, detector ${controls.detector}, spur ${controls.spurRejection}; ` +
+      `preamp ${controls.preamp}, detector ${controls.detector}, spur ${controls.spurRejection}, VBW ${controls.vbw}; ` +
       `applied ref ${appliedRef} dBm, atten ${applied.atten < 0 ? 'auto' : applied.atten}, preamp ${appliedPreamp ?? applied.preamp}`);
     controls.refLevelDbm = appliedRef;
     this.recentSweeps = []; // overloads under the old settings no longer count

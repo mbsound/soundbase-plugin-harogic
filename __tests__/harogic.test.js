@@ -138,7 +138,7 @@ test('config, sweep and trace on SoundBase’s grid', async (t) => {
   const caps = (await deviceRow(id)).capabilities;
   assert.deepEqual(
     caps.controls.map((c) => c.id),
-    ['refLevelDbm', 'attenDb', 'preamp', 'detector', 'spurRejection']
+    ['refLevelDbm', 'attenDb', 'preamp', 'detector', 'vbw', 'spurRejection']
   );
 
   await request('POST', `${devicePath(id)}/sweep/start`);
@@ -171,6 +171,7 @@ test('out-of-range settings are clamped and echoed, not rejected', async () => {
     preamp: 'auto',
     detector: 'average',
     spurRejection: 'standard',
+    vbw: 'rbw',
   });
 
   // a patch carrying one control leaves the others in force

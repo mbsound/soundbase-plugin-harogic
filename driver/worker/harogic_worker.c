@@ -291,7 +291,10 @@ static void op_config(long id, const char *line) {
         } else {
             prof_in.RBWMode = RBW_Auto;
         }
-        prof_in.VBWMode = VBW_EqualToRBW;
+        /* VBW: a fraction of the RBW smooths the displayed noise (SAStudio's
+           default is RBW/10). "vbwRatio": 1, 0.1 or 0.01; anything else = RBW. */
+        double vbw_ratio = get_num(line, "vbwRatio", 1);
+        prof_in.VBWMode = vbw_ratio == 0.1 ? VBW_TenPercentRBW : vbw_ratio == 0.01 ? VBW_OnePercentRBW : VBW_EqualToRBW;
         prof_in.RefLevel_dBm = get_num(line, "refLevelDbm", prof_in.RefLevel_dBm);
         prof_in.Atten = (int8_t)get_num(line, "atten", -1);
         prof_in.Preamplifier = (PreamplifierState_TypeDef)(int)get_num(line, "preamp", AutoOn);

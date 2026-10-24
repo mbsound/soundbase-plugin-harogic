@@ -32,6 +32,7 @@ Beside SoundBase's own RBW and point count, each analyzer offers:
 | Attenuation | Auto, or 0–30 dB in 5 dB steps |
 | Preamplifier | Auto, Off, or Low/Medium/High gain on models that have them |
 | Detector | Peak (default), Average, RMS, Sample |
+| Video bandwidth | = RBW (default, fastest), RBW ÷ 10 (SAStudio's default, ~1 dB lower noise, half the sweep rate), RBW ÷ 100 |
 | Spur rejection | Off, Standard (default), Enhanced |
 
 **Preamplifier High is easy to overload.** Next to a strong transmitter (a TV
@@ -41,6 +42,16 @@ as an overload warning, critical once a quarter of sweeps clip. Auto or Medium
 gain avoids it; add attenuation only after turning the gain down. A bus-powered
 analyzer can also brown out at High gain with a narrow RBW (every hop fails
 with a bus error): run it from its power supply.
+
+**Noise floor and reference level.** The reference level sets the analyzer's
+gain and therefore the floor: measured on a SAN-60 at RBW 5 kHz, preamp
+Medium, attenuation Auto, a reference level of −20 dBm gives a floor of about
+−108 dBm, −30 gives −112 and −40 gives −114, until strong signals in the band
+overload the input (the overload warning says so). Lower it until the warning
+appears, then back off. SoundBase's own point count matters too: the analyzer
+produces about 4000 points for a 146 MHz span whatever the RBW, so 1001 plot
+points keep the strongest of every four (about +2 dB on noise); 4001 points
+show the trace at the analyzer's resolution.
 
 RBW left on auto follows fReqon's rule: 10 kHz up to a 15 MHz span, 30 kHz to
 50 MHz, 50 kHz to 150 MHz, 100 kHz above.
