@@ -1,6 +1,6 @@
 {
   "name": "soundbase-plugin-harogic",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "SoundBase plugin for Harogic spectrum analyzers (USB and network) on Apple Silicon Macs.",
   "license": "MIT",
   "author": {
