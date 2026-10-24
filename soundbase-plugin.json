@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "harogic",
   "name": "Harogic Spectrum Analyzers",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "license": "MIT",
   "platforms": [
     "darwin-arm64"
