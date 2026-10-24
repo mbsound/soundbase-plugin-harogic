@@ -21,7 +21,7 @@ export const NETWORK_PRODUCT = 'plugin:harogic/network';
 
 const MIN_FREQUENCY_HZ = 9_000;
 const MAX_FREQUENCY_HZ = 6_300_000_000;
-const RBW_HZ = [1_000, 3_000, 5_000, 10_000, 30_000, 50_000, 100_000, 300_000, 1_000_000];
+const RBW_HZ = [1_000, 3_000, 5_000, 10_000, 30_000, 50_000, 100_000, 300_000, 1_000_000, 3_000_000];
 const MIN_POINTS = 2;
 const MAX_POINTS = 32_001;
 const DEFAULT_POINTS = 1_001;
@@ -44,7 +44,24 @@ const WARNINGS_INTERVAL_MS = 500;
 const PREAMP = { auto: 0, off: 1, low: 2, medium: 3, high: 4 };
 const DETECTOR = { peak: 1, average: 2, rms: 6, sample: 0 };
 const SPUR = { off: 0, standard: 1, enhanced: 2 };
-const VBW = { rbw: 1, tenth: 0.1, hundredth: 0.01 };
+// Video bandwidth presets, as fReqon offers them: a ratio of the RBW, or a
+// fixed value. (fReqon's last entry, Manual, pairs with a free-entry box that
+// a SoundBase control cannot have; the fixed values stand in for it.)
+const VBW = {
+  auto: { label: 'Auto (VBW=RBW)', ratio: 1 },
+  'ratio-0.1': { label: '0.1 * RBW', ratio: 0.1 },
+  'ratio-0.01': { label: '0.01 * RBW', ratio: 0.01 },
+  'ratio-10': { label: '10 * RBW', ratio: 10 },
+  '1k': { label: '1 kHz', hz: 1_000 },
+  '3k': { label: '3 kHz', hz: 3_000 },
+  '10k': { label: '10 kHz', hz: 10_000 },
+  '30k': { label: '30 kHz', hz: 30_000 },
+  '50k': { label: '50 kHz', hz: 50_000 },
+  '100k': { label: '100 kHz', hz: 100_000 },
+  '300k': { label: '300 kHz', hz: 300_000 },
+  '1M': { label: '1 MHz', hz: 1_000_000 },
+  '3M': { label: '3 MHz', hz: 3_000_000 },
+};
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -198,10 +215,9 @@ class HarogicAdapter {
           { id: 'detector', type: 'dropdown', label: 'Detector', default: 'peak',
             choices: [{ id: 'peak', label: 'Peak' }, { id: 'average', label: 'Average' },
               { id: 'rms', label: 'RMS' }, { id: 'sample', label: 'Sample' }] },
-          { id: 'vbw', type: 'dropdown', label: 'Video bandwidth', default: 'rbw',
-            choices: [{ id: 'rbw', label: '= RBW (fastest)' }, { id: 'tenth', label: 'RBW ÷ 10 (SAStudio’s default)' },
-              { id: 'hundredth', label: 'RBW ÷ 100' }],
-            help: 'Averages the noise on the trace: a narrower video bandwidth lowers the displayed noise by about 1 dB per step and smooths it, at the cost of sweep rate (RBW ÷ 10 roughly halves it, ÷ 100 is ten times slower). Signals are not affected.' },
+          { id: 'vbw', type: 'dropdown', label: 'VBW Mode', default: 'auto',
+            choices: Object.entries(VBW).map(([id, v]) => ({ id, label: v.label })),
+            help: 'Video bandwidth: averages the noise on the trace. Narrower than the RBW lowers and smooths the displayed noise (about 1 dB per step down) at the cost of sweep rate (0.1 * RBW roughly halves it, 0.01 * RBW is ten times slower); 10 * RBW bypasses the video filter. Signals are not affected. SAStudio’s default is 0.1 * RBW.' },
           { id: 'spurRejection', type: 'dropdown', label: 'Spur rejection', default: 'standard',
             choices: [{ id: 'off', label: 'Off' }, { id: 'standard', label: 'Standard' },
               { id: 'enhanced', label: 'Enhanced' }],
@@ -320,7 +336,7 @@ class HarogicAdapter {
       preamp: choice(PREAMP, c.preamp, 'auto'),
       detector: choice(DETECTOR, c.detector, 'peak'),
       spurRejection: choice(SPUR, c.spurRejection, 'standard'),
-      vbw: choice(VBW, c.vbw, 'rbw'),
+      vbw: choice(VBW, c.vbw, 'auto'),
     };
 
     this.generation += 1;
@@ -331,7 +347,8 @@ class HarogicAdapter {
       preamp: PREAMP[controls.preamp],
       detector: DETECTOR[controls.detector],
       spur: SPUR[controls.spurRejection],
-      vbwRatio: VBW[controls.vbw],
+      vbwRatio: VBW[controls.vbw].ratio ?? 1,
+      vbwHz: VBW[controls.vbw].hz ?? 0,
     });
 
     // the analyzer settles the reference level; report what it chose

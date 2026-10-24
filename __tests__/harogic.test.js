@@ -171,7 +171,7 @@ test('out-of-range settings are clamped and echoed, not rejected', async () => {
     preamp: 'auto',
     detector: 'average',
     spurRejection: 'standard',
-    vbw: 'rbw',
+    vbw: 'auto',
   });
 
   // a patch carrying one control leaves the others in force

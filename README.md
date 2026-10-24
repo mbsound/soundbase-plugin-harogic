@@ -32,7 +32,7 @@ Beside SoundBase's own RBW and point count, each analyzer offers:
 | Attenuation | Auto, or 0–30 dB in 5 dB steps |
 | Preamplifier | Auto, Off, or Low/Medium/High gain on models that have them |
 | Detector | Peak (default), Average, RMS, Sample |
-| Video bandwidth | = RBW (default, fastest), RBW ÷ 10 (SAStudio's default, ~1 dB lower noise, half the sweep rate), RBW ÷ 100 |
+| VBW Mode | fReqon's list: Auto (VBW=RBW, default), 0.1 * RBW (SAStudio's default, ~1 dB lower noise at half the sweep rate), 0.01 * RBW, 10 * RBW, or a fixed 1 kHz … 3 MHz |
 | Spur rejection | Off, Standard (default), Enhanced |
 
 **Preamplifier High is easy to overload.** Next to a strong transmitter (a TV
