@@ -68,7 +68,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       config = {
         startHz: Math.max(9e3, req.startHz),
         stopHz: Math.min(6.3e9, req.stopHz),
-        pointCount: req.pointCount,
+        pointCount: req.pointCount > 0 ? req.pointCount : 4001, // 0: the analyzer's own resolution
         rbwHz: req.rbwHz,
         vbwHz: req.rbwHz,
         refLevelDbm: Math.min(20, Math.max(-50, Math.round(req.refLevelDbm))),

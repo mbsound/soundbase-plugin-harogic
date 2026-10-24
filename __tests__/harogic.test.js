@@ -133,7 +133,7 @@ test('config, sweep and trace on SoundBase’s grid', async (t) => {
   assert.equal(applied.status, 200, JSON.stringify(applied.body));
   assert.equal(applied.body.startHz, 470e6);
   assert.equal(applied.body.stopHz, 616e6);
-  assert.equal(applied.body.pointCount, 1461);
+  assert.equal(applied.body.pointCount, 4001, 'the analyzer\'s own resolution, not the 1461 asked for');
   // no RBW asked for: automatic, and what it resolved to is reported
   assert.equal(applied.body.rbwHz, undefined);
   assert.equal(applied.body.resolved.rbwHz, autoRbwHz(146e6));
@@ -149,9 +149,9 @@ test('config, sweep and trace on SoundBase’s grid', async (t) => {
   t.after(() => request('POST', `${devicePath(id)}/sweep/stop`));
   const trace = await request('GET', `${devicePath(id)}/trace`);
   assert.equal(trace.status, 200);
-  assert.equal(trace.body.amplitudesDbm.length, 1461);
+  assert.equal(trace.body.amplitudesDbm.length, 4001);
   const amps = trace.body.amplitudesDbm;
-  assert.ok(Math.max(...amps.slice(470, 495)) > -70, 'carrier at a third of the span');
+  assert.ok(Math.max(...amps.slice(1290, 1360)) > -70, 'carrier at a third of the span');
   assert.ok(Math.min(...amps) > -110);
 });
 
@@ -167,7 +167,7 @@ test('out-of-range settings are clamped and echoed, not rejected', async () => {
   assert.equal(applied.status, 200, JSON.stringify(applied.body));
   assert.equal(applied.body.startHz, 9_000);
   assert.equal(applied.body.stopHz, 6.3e9);
-  assert.equal(applied.body.pointCount, 32_001);
+  assert.equal(applied.body.pointCount, 4001, 'point count is the analyzer\'s, whatever was asked');
   assert.equal(applied.body.rbwHz, 30_000);
   assert.deepEqual(applied.body.controls, {
     refLevelDbm: -50, // what the analyzer settled on

@@ -24,11 +24,18 @@ SDK, libusb and the C++ runtime ship inside the plugin.
 
 Close SAStudio4 or fReqon first: an analyzer serves one application at a time.
 
-Beside SoundBase's own RBW and point count, each analyzer offers:
+**Defaults are chosen to look right out of the box:** the trace is served at
+the analyzer's own resolution (about 4000 points on a wide span, whatever the
+RBW; SoundBase shows no point-count box for this device), RBW is automatic
+(50 kHz on a 146 MHz span, hundreds of sweeps a second), the reference level
+starts at −30 dBm with the automatic reference level on, preamplifier and
+attenuation on Auto. Nothing needs changing for a good first scan.
+
+Beside SoundBase's own RBW, each analyzer offers:
 
 | Control | |
 |---|---|
-| Reference level | −100 to +20 dBm. Sets the gain and with it the noise floor (−20 → about −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz). |
+| Reference level | −100 to +20 dBm, default −30. Sets the gain and with it the noise floor (−20 → about −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz). |
 | Auto reference level | On (default): while the input overloads the level is raised in 5 dB steps until it stops, and lowered again after 30 s clean, never below a level that overloaded in the last 5 minutes; the level in force is shown as a notice. Off: the level is used as set. |
 | Attenuation | Auto, or 0–30 dB in 5 dB steps |
 | Preamplifier | Auto, Off, or Low/Medium/High gain on models that have them |
@@ -49,10 +56,9 @@ gain and therefore the floor: measured on a SAN-60 at RBW 5 kHz, preamp
 Medium, attenuation Auto, a reference level of −20 dBm gives a floor of about
 −108 dBm, −30 gives −112 and −40 gives −114, until strong signals in the band
 overload the input (the overload warning says so). Lower it until the warning
-appears, then back off. SoundBase's own point count matters too: the analyzer
-produces about 4000 points for a 146 MHz span whatever the RBW, so 1001 plot
-points keep the strongest of every four (about +2 dB on noise); 4001 points
-show the trace at the analyzer's resolution.
+appears, then back off. The trace is always at the analyzer's resolution
+(about 4000 points for a 146 MHz span whatever the RBW), so nothing is
+averaged away or doubled up.
 
 **Sweep rate on USB.** Measured on a SAN-60 over a 146 MHz span: about 880
 sweeps/s at RBW 100 kHz and 520 at 50 kHz, sustained. At 30 kHz and below

@@ -259,8 +259,9 @@ static void op_config(long id, const char *line) {
         return;
     }
     double start = get_num(line, "startHz", 470e6), stop = get_num(line, "stopHz", 616e6);
-    int points = (int)get_num(line, "pointCount", 1001);
-    if (points < 2) points = 2;
+    int points = (int)get_num(line, "pointCount", 0);
+    bool native_points = points <= 0; /* 0: one output point per native trace point */
+    if (!native_points && points < 2) points = 2;
     if (stop <= start) stop = start + 1e3;
     double rbw = get_num(line, "rbwHz", 0);
     bool fallback = false;
@@ -277,6 +278,7 @@ static void op_config(long id, const char *line) {
         memset(&ti, 0, sizeof ti);
         ti.TotalHops = 1;
         ti.FullsweepTracePoints = ti.PartialsweepTracePoints = 4001;
+        ti.UserStopIndex = 4000;
         ti.EstimateMinSweepTime = 0.02;
     } else {
         SWP_ProfileDeInit(&dev, &prof_in);
@@ -347,6 +349,11 @@ static void op_config(long id, const char *line) {
     if (prof_out.StopFreq_Hz > 0 && prof_out.StopFreq_Hz < stop) stop = prof_out.StopFreq_Hz;
     user_start = start;
     user_stop = stop;
+    if (native_points) {
+        int n = (ti.TotalHops - 1) * ti.PartialsweepTracePoints + (int)ti.UserStopIndex - (int)ti.UserStartIndex + 1;
+        if (ti.FullsweepTracePoints > 0 && n > ti.FullsweepTracePoints) n = ti.FullsweepTracePoints;
+        points = n < 2 ? 2 : n;
+    }
     out_points = points;
     out_pwr = realloc(out_pwr, sizeof(float) * points);
     ensure_native(ti.FullsweepTracePoints > ti.PartialsweepTracePoints * ti.TotalHops

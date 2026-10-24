@@ -22,9 +22,6 @@ export const NETWORK_PRODUCT = 'plugin:harogic/network';
 const MIN_FREQUENCY_HZ = 9_000;
 const MAX_FREQUENCY_HZ = 6_300_000_000;
 const RBW_HZ = [1_000, 3_000, 5_000, 10_000, 30_000, 50_000, 100_000, 300_000, 1_000_000, 3_000_000];
-const MIN_POINTS = 2;
-const MAX_POINTS = 32_001;
-const DEFAULT_POINTS = 1_001;
 const DEFAULT_START_HZ = 470_000_000;
 const DEFAULT_STOP_HZ = 616_000_000;
 
@@ -249,9 +246,13 @@ class HarogicAdapter {
         minFrequencyHz: MIN_FREQUENCY_HZ,
         maxFrequencyHz: MAX_FREQUENCY_HZ,
         rbwHz: [...RBW_HZ],
+        // The trace is served at the analyzer's own resolution (about 4000
+        // points on a wide span, whatever the RBW): nothing is averaged away
+        // or doubled up, and there is no point count to get wrong.
+        autoPointCount: true,
         controls: [
           { id: 'refLevelDbm', type: 'number', label: 'Reference level', unit: 'dBm',
-            default: -20, min: -100, max: 20, step: 1,
+            default: -30, min: -100, max: 20, step: 1,
             help: 'Sets the analyzer’s gain while attenuation is on Auto, and with it the noise floor: every 10 dB lower here lowers the floor by about 6 dB (measured: −20 → floor −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz) until strong signals overload the input, which the overload warning reports. Lower it until the warning appears, then back off. With attenuation set by hand the attenuation decides the reference level instead.' },
           { id: 'refLevelMode', type: 'dropdown', label: 'Auto reference level', default: 'auto',
             choices: [{ id: 'auto', label: 'On: raise it while the input overloads' }, { id: 'manual', label: 'Off: use the level as set' }],
@@ -368,11 +369,10 @@ class HarogicAdapter {
       startHz + 1_000, MAX_FREQUENCY_HZ);
     const span = stopHz - startHz;
 
-    let pointCount;
-    if (isNum(cfg.pointCount)) pointCount = Math.round(cfg.pointCount);
-    else if (isNum(cfg.stepHz) && cfg.stepHz > 0) pointCount = Math.round(span / cfg.stepHz) + 1;
-    else pointCount = prev.pointCount ?? DEFAULT_POINTS;
-    pointCount = clamp(pointCount, MIN_POINTS, MAX_POINTS);
+    // autoPointCount: the analyzer's native resolution; pointCount/stepHz
+    // from the host are ignored, as the contract allows, and the echo says
+    // what the analyzer chose. HAROGIC_PLUGIN_POINTS forces a count (tests).
+    const pointCount = Number(process.env.HAROGIC_PLUGIN_POINTS) || 0;
 
     // Absent means unchanged; never set means automatic.
     const rbwRequested = isNum(cfg.rbwHz) ? nearest(RBW_HZ, cfg.rbwHz)
@@ -384,7 +384,7 @@ class HarogicAdapter {
     const c = { ...prev.controls, refLevelDbm: this.requestedRefDbm ?? prev.controls.refLevelDbm,
       ...(cfg.controls ?? {}) };
     const controls = {
-      refLevelDbm: isNum(c.refLevelDbm) ? clamp(Math.round(c.refLevelDbm), -100, 20) : -20,
+      refLevelDbm: isNum(c.refLevelDbm) ? clamp(Math.round(c.refLevelDbm), -100, 20) : -30,
       attenDb: c.attenDb === 'auto' || c.attenDb == null ? 'auto'
         : String(nearest([0, 5, 10, 15, 20, 25, 30], clamp(Number(c.attenDb) || 0, 0, 30))),
       preamp: choice(PREAMP, c.preamp, 'auto'),
@@ -434,7 +434,7 @@ class HarogicAdapter {
       logger('warn', `${this.analyzer.describe}: the analyzer refused these settings (SWP_Configuration ${applied.firstStatus}) ` +
         'and was configured with its defaults for everything but the span and RBW.');
     logger('info', `${this.analyzer.describe}: ${(startHz / 1e6).toFixed(3)}–${(stopHz / 1e6).toFixed(3)} MHz, ` +
-      `${pointCount} points, RBW ${Math.round(applied.rbwHz)} Hz; asked ref ${controls.refLevelDbm} dBm, atten ${controls.attenDb}, ` +
+      `${applied.pointCount} points (analyzer resolution), RBW ${Math.round(applied.rbwHz)} Hz; asked ref ${controls.refLevelDbm} dBm, atten ${controls.attenDb}, ` +
       `preamp ${controls.preamp}, detector ${controls.detector}, spur ${controls.spurRejection}, VBW ${controls.vbw}; ` +
       `applied ref ${appliedRef} dBm, atten ${applied.atten < 0 ? 'auto' : applied.atten}, preamp ${appliedPreamp ?? applied.preamp}`);
     controls.refLevelDbm = appliedRef;
