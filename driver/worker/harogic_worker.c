@@ -408,11 +408,17 @@ static float mock_gauss(double f, double c, double w, double h) {
     return (float)(h * exp(-x * x));
 }
 
+/* debug: where a sweep's wall time goes, summarised every 100 sweeps */
+static double dbg_t_reply, dbg_sdk, dbg_gap, dbg_other;
+static int dbg_n;
+
 static void op_sweep(long id) {
     if (!configured) {
         reply_err(id, -1, "not configured");
         return;
     }
+    double t_start = now_s();
+    if (debug && dbg_t_reply > 0) dbg_gap += t_start - dbg_t_reply;
     int N = ti.FullsweepTracePoints, P = ti.PartialsweepTracePoints;
     int lo, hi, ok_hops = 0, last_err = 0;
     int rej_index = 0, rej_dup = 0, rej_freq = 0, missing = 0;
@@ -456,6 +462,7 @@ static void op_sweep(long id) {
         }
         memset(seen, 0, T);
         int max_reads = 4 * T + 8;
+        double t_sdk = now_s();
         for (int r = 0; r < max_reads && ok_hops < T; r++) {
             int st = SWP_GetPartialSweep(&dev, hop_freq, hop_pwr, &hop, &frame, &aux);
             if (debug)
@@ -483,6 +490,7 @@ static void op_sweep(long id) {
             seen[hop] = 1;
             ok_hops++;
         }
+        if (debug) dbg_sdk += now_s() - t_sdk;
         /* Hop h fills [h*P, h*P+P); the user's span runs from UserStartIndex in
            the first hop to UserStopIndex in the last, so the full trace is
            (hops-1)*P + UserStopIndex + 1 points. (htraapi-macos's swp_test
@@ -539,12 +547,23 @@ static void op_sweep(long id) {
                 aux.IFAGCGain, lo, hi, nat_freq[lo], nat_freq[hi], nat_pwr[lo], nat_pwr[(lo + hi) / 2], nat_pwr[hi]);
     resample(nat_freq, nat_pwr, lo, hi);
     printf("{\"id\":%ld,\"ok\":true,\"result\":{\"overflow\":%s,\"temperatureC\":%.2f,\"missingHops\":%d,"
-           "\"rejectedFrames\":%d,\"rejectedFreq\":%d,\"gainMin\":%d,\"gainMax\":%d,\"ifagcDb\":%.2f,\"emptyBins\":%d,\"amps\":", id,
+           "\"rejectedFrames\":%d,\"rejectedFreq\":%d,\"gainMin\":%d,\"gainMax\":%d,\"ifagcDb\":%.2f,\"emptyBins\":%d,"
+           "\"deviceTimeS\":%.6f,\"hostTimeS\":%.6f,\"amps\":", id,
            overflow ? "true" : "false", last_temp / 100.0, missing, rej_index + rej_dup + rej_freq, rej_freq,
-           gain_max < 0 ? 0 : gain_min, gain_max < 0 ? 0 : gain_max, aux.IFAGCGain, empty_bins);
+           gain_max < 0 ? 0 : gain_min, gain_max < 0 ? 0 : gain_max, aux.IFAGCGain, empty_bins,
+           aux.SysTimeStamp, now_s());
     print_amps(out_pwr, out_points);
     printf("}}\n");
     fflush(stdout);
+    if (debug) {
+        dbg_t_reply = now_s();
+        dbg_other += dbg_t_reply - t_start;
+        if (++dbg_n >= 100) {
+            fprintf(stderr, "timing: per sweep SDK %.1f ms, worker other %.1f ms, gap waiting for the next request %.1f ms\n",
+                    1e3 * dbg_sdk / dbg_n, 1e3 * (dbg_other - dbg_sdk) / dbg_n, 1e3 * dbg_gap / dbg_n);
+            dbg_n = 0; dbg_sdk = dbg_gap = dbg_other = 0;
+        }
+    }
 }
 
 static void op_status(long id) {

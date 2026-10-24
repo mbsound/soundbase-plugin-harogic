@@ -54,6 +54,14 @@ produces about 4000 points for a 146 MHz span whatever the RBW, so 1001 plot
 points keep the strongest of every four (about +2 dB on noise); 4001 points
 show the trace at the analyzer's resolution.
 
+**Sweep rate on USB.** Measured on a SAN-60 over a 146 MHz span: about 880
+sweeps/s at RBW 100 kHz and 520 at 50 kHz, sustained. At 30 kHz and below
+the SDK moves much larger frames per hop and the rate settles at roughly
+15–30 sweeps/s after a fast first few seconds (a limitation in the Mac SDK
+port's USB path, not in the analyzer; the data stays live). Still several
+sweeps a second more than SoundBase needs. A cable that is not the
+analyzer's own can halve every rate or keep it off the bus altogether.
+
 RBW left on auto follows fReqon's rule: 10 kHz up to a 15 MHz span, 30 kHz to
 50 MHz, 50 kHz to 150 MHz, 100 kHz above.
 

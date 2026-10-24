@@ -483,7 +483,9 @@ class HarogicAdapter {
         }
         const generation = this.generation;
         try {
+          const tSweep = performance.now();
           const { amps, overflow } = await this.analyzer.sweep(this.sweepTimeoutMs);
+          const tGot = performance.now();
           failingSince = null;
           if (generation === this.generation) {
             const now = Date.now();
@@ -499,6 +501,14 @@ class HarogicAdapter {
           }
           if (this.sweeping && generation === this.generation && amps.length === this.effective?.pointCount)
             onTrace(amps);
+          if (process.env.HAROGIC_PLUGIN_DEBUG === '1') {
+            const t = (this.timing ??= { n: 0, sweep: 0, trace: 0, since: tGot });
+            t.n += 1; t.sweep += tGot - tSweep; t.trace += performance.now() - tGot;
+            if (tGot - t.since >= 5000) {
+              logger('debug', `${this.analyzer.describe}: ${t.n} sweeps in ${((tGot - t.since) / 1000).toFixed(1)} s; per sweep: worker round-trip ${(t.sweep / t.n).toFixed(1)} ms, hand-off to the shell ${(t.trace / t.n).toFixed(1)} ms`);
+              this.timing = null;
+            }
+          }
         } catch (err) {
           if (!this.sweeping) return;
           if (err.timeout || err.exited) {
@@ -616,9 +626,11 @@ class HarogicAdapter {
   /** Supply and temperature, read between sweeps; warnings for what a person can act on. */
   async #checkHealth() {
     if (!this.analyzer?.isOpen || this.recovering) return;
+    // HAROGIC_PLUGIN_HEALTH_OPS=power,status (diagnostics): which queries to run
+    const ops = (process.env.HAROGIC_PLUGIN_HEALTH_OPS ?? 'power,status').split(',');
     const [power, status] = await Promise.all([
-      this.analyzer.power().catch(() => null),
-      this.analyzer.status().catch(() => null),
+      ops.includes('power') ? this.analyzer.power().catch(() => null) : null,
+      ops.includes('status') ? this.analyzer.status().catch(() => null) : null,
     ]);
     const list = [];
     if (power) {
