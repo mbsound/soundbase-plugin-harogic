@@ -159,6 +159,14 @@ export class HarogicAnalyzer {
     return this.#call('status', {}, 5_000);
   }
 
+  power() {
+    return this.#call('power', {}, 5_000);
+  }
+
+  get isOpen() {
+    return Boolean(this.worker && !this.worker.dead);
+  }
+
   #call(op, params, timeoutMs) {
     if (!this.worker) return Promise.reject(new Error(`${this.describe} is not open`));
     return this.worker.call(op, params, timeoutMs);

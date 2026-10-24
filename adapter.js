@@ -40,6 +40,48 @@ const OVERLOAD_MIN_SHARE = 0.01;
 // too high across tens of MHz (measured on a SAN-60 at preamp High).
 const OVERLOAD_CRITICAL_SHARE = 0.25;
 const WARNINGS_INTERVAL_MS = 500;
+// An analyzer that stops answering is reopened by the plugin itself for this
+// long before the device is declared failed: SoundBase stops retrying a
+// failed device after a few attempts, and a replug or a network blip is
+// usually over within a minute.
+const RECONNECT_WINDOW_MS = Number(process.env.HAROGIC_PLUGIN_RECONNECT_MS) || 120_000;
+const RECONNECT_RETRY_MS = Number(process.env.HAROGIC_PLUGIN_RECONNECT_RETRY_MS) || 2_000;
+// Supply and temperature are read between sweeps at this interval.
+const HEALTH_INTERVAL_MS = Number(process.env.HAROGIC_PLUGIN_HEALTH_MS) || 5_000;
+const TEMPERATURE_WARN_C = 65;
+// Auto reference level: raised by this many dB while this share of recent
+// sweeps overload, lowered back towards the requested level after a clean
+// spell, never below a level that overloaded recently.
+const AUTO_REF_STEP_DB = 5;
+const AUTO_REF_ACT_SHARE = 0.05;
+const AUTO_REF_SETTLE_MS = Number(process.env.HAROGIC_PLUGIN_AUTOREF_SETTLE_MS) || 30_000;
+const AUTO_REF_MEMORY_MS = 5 * 60_000;
+
+// DeviceInfo.Model is the core module and its hardware revision, from the
+// SDK's DeviceClass_TypeDef. A USB analyzer is the core in a box (N60 = SAN-60);
+// an R-series network analyzer reports the core it is built around.
+const CORES = {
+  10: 'E90 R0', 11: 'E90 R1', 12: 'E90 R2', 13: 'E90 R3', 14: 'E90 R4', 15: 'E90 R5',
+  20: 'E200 R0', 21: 'E200 R1', 22: 'E200 R2', 23: 'E200 R3',
+  33: 'TRX60 R3', 34: 'TRX60 R4', 40: 'ZRX200 R0',
+  53: 'N60 R4', 54: 'M60 R4', 55: 'N45 R4', 56: 'M80 R5', 57: 'M60 R5', 58: 'N60 R5', 59: 'N45 R5',
+  60: 'E310 R0', 61: 'E310 R1', 65: 'N45 R6', 66: 'N60 R6', 67: 'N90 R0', 68: 'PN90', 69: 'N91 R0',
+  70: 'E330 R0', 80: 'TX90 R0', 90: 'N400 R0', 91: 'N400 R1', 92: 'N400 R2', 93: 'N150 R1',
+  94: 'N400 R2_V2', 95: 'N400 R3', 96: 'N400 R4', 100: 'Simulator', 110: 'RX90 R0',
+  120: 'A24 R0', 121: 'A24 R1', 130: 'C24 R0', 131: 'C24 R1', 140: 'W200 R3', 141: 'W200 R2', 144: 'W200 R4',
+};
+const PRODUCT_PREFIX = { N: 'SAN', M: 'SAM', E: 'SAE', TRX: 'TRX', PN: 'PN', TX: 'TX', RX: 'RX', ZRX: 'ZRX' };
+
+/** "SAN-60 (N60 core R6)" for a USB analyzer, "N90 core R0" for a network one. */
+export function modelName(code, iface) {
+  const core = CORES[code];
+  if (!core) return `model ${code}`;
+  const [name, rev] = core.split(' ');
+  const m = /^([A-Z]+)(\d+)$/.exec(name);
+  const coreText = rev ? `${name} core ${rev}` : `${name} core`;
+  if (iface === 'usb' && m && PRODUCT_PREFIX[m[1]]) return `${PRODUCT_PREFIX[m[1]]}-${m[2]} (${coreText})`;
+  return coreText;
+}
 
 const PREAMP = { auto: 0, off: 1, low: 2, medium: 3, high: 4 };
 const DETECTOR = { peak: 1, average: 2, rms: 6, sample: 0 };
@@ -163,18 +205,24 @@ class HarogicAdapter {
     this.recentSweeps = []; // [time, overloaded] over OVERLOAD_WINDOW_MS
     this.lastWarningsAt = 0;
     this.requestedRefDbm = undefined; // what the user asked for, not what the analyzer applied
+    this.profile = null; // the last profile sent to the worker, re-applied after a reconnect
+    this.recovering = null; // promise while a reconnect is in progress
+    this.closed = false;
+    this.healthTimer = null;
+    this.autoRef = { inForce: undefined, overloadedAt: new Map(), cleanSince: 0 };
     /** assigned by the shell */
     this.onFatal = null;
     this.onWarnings = null;
   }
 
   async open() {
+    this.closed = false;
     const { key, target, describe, host, env } = await this.#target();
     this.analyzer = new HarogicAnalyzer({ key, target, describe, env, log: logger });
     this.analyzer.onLost = (err) =>
-      this.#lost(err.timeout
-        ? `${describe} stopped answering (${err.message}). It may have been unplugged, powered off or disconnected from the network.`
-        : `${describe}: the SDK worker stopped (${err.message}).`);
+      this.#recover(err.timeout
+        ? `stopped answering (${err.message})`
+        : `the SDK worker stopped (${err.message})`);
     let info;
     try {
       info = await this.analyzer.open();
@@ -194,6 +242,7 @@ class HarogicAdapter {
       }];
     }
     this.#reportWarnings();
+    this.#startHealthTimer();
 
     return {
       capabilities: {
@@ -204,6 +253,9 @@ class HarogicAdapter {
           { id: 'refLevelDbm', type: 'number', label: 'Reference level', unit: 'dBm',
             default: -20, min: -100, max: 20, step: 1,
             help: 'Sets the analyzer’s gain while attenuation is on Auto, and with it the noise floor: every 10 dB lower here lowers the floor by about 6 dB (measured: −20 → floor −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz) until strong signals overload the input, which the overload warning reports. Lower it until the warning appears, then back off. With attenuation set by hand the attenuation decides the reference level instead.' },
+          { id: 'refLevelMode', type: 'dropdown', label: 'Auto reference level', default: 'auto',
+            choices: [{ id: 'auto', label: 'On: raise it while the input overloads' }, { id: 'manual', label: 'Off: use the level as set' }],
+            help: 'On: the reference level above is the one to aim for; while strong signals overload the input the plugin raises it in 5 dB steps until the overloads stop, and lowers it again after 30 s without them (never below a level that overloaded in the last 5 minutes). The level in force is shown as a notice. Off: the level is used as set, and overloads are only reported.' },
           { id: 'attenDb', type: 'dropdown', label: 'Attenuation', default: 'auto',
             choices: [{ id: 'auto', label: 'Auto' },
               ...[0, 5, 10, 15, 20, 25, 30].map((db) => ({ id: String(db), label: `${db} dB` }))] },
@@ -226,7 +278,7 @@ class HarogicAdapter {
       },
       identity: {
         manufacturer: 'Harogic',
-        model: `Model 0x${info.model.toString(16)}`,
+        model: modelName(info.model, target.iface),
         firmware: `MCU 0x${info.mcuFirmware.toString(16)}, FPGA 0x${info.fpgaFirmware.toString(16)}, SDK ${info.sdk}`,
         serial: info.uid,
       },
@@ -307,6 +359,8 @@ class HarogicAdapter {
    * come back as requested unless the hardware narrowed the range.
    */
   async applyConfig(cfg = {}) {
+    if (this.recovering) await this.recovering;
+    if (!this.analyzer?.isOpen) throw new Error(`${this.analyzer?.describe ?? 'The analyzer'} is not connected`);
     const prev = this.effective ?? { controls: {} };
     const startHz = clamp(isNum(cfg.startHz) ? cfg.startHz : (prev.startHz ?? DEFAULT_START_HZ),
       MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ - 1_000);
@@ -337,19 +391,26 @@ class HarogicAdapter {
       detector: choice(DETECTOR, c.detector, 'peak'),
       spurRejection: choice(SPUR, c.spurRejection, 'standard'),
       vbw: choice(VBW, c.vbw, 'auto'),
+      refLevelMode: c.refLevelMode === 'manual' ? 'manual' : 'auto',
     };
 
+    // a changed request resets the automatic reference level
+    const refChanged = controls.refLevelDbm !== this.requestedRefDbm || controls.refLevelMode === 'manual';
+    if (refChanged) this.autoRef.inForce = undefined;
+    const refToApply = this.autoRef.inForce ?? controls.refLevelDbm;
+
     this.generation += 1;
-    const applied = await this.analyzer.configure({
+    this.profile = {
       startHz, stopHz, pointCount, rbwHz,
-      refLevelDbm: controls.refLevelDbm,
+      refLevelDbm: refToApply,
       atten: controls.attenDb === 'auto' ? -1 : Number(controls.attenDb),
       preamp: PREAMP[controls.preamp],
       detector: DETECTOR[controls.detector],
       spur: SPUR[controls.spurRejection],
       vbwRatio: VBW[controls.vbw].ratio ?? 1,
       vbwHz: VBW[controls.vbw].hz ?? 0,
-    });
+    };
+    const applied = await this.analyzer.configure(this.profile);
 
     // the analyzer settles the reference level; report what it chose
     this.requestedRefDbm = controls.refLevelDbm;
@@ -378,8 +439,12 @@ class HarogicAdapter {
       `applied ref ${appliedRef} dBm, atten ${applied.atten < 0 ? 'auto' : applied.atten}, preamp ${appliedPreamp ?? applied.preamp}`);
     controls.refLevelDbm = appliedRef;
     this.recentSweeps = []; // overloads under the old settings no longer count
+    this.autoRef.cleanSince = Date.now();
     this.#reportWarnings();
-    const sweepTimeMs = Math.max(1, Math.round(applied.minSweepTimeS * 1000));
+    // The SDK's own estimate of the sweep time is 0 on these analyzers, so one
+    // sweep is timed here: SoundBase uses it to tell a slow sweep from a
+    // stalled one. While sweeping, the timed sweep queues behind one more.
+    const sweepTimeMs = await this.#measureSweepMs();
     this.sweepTimeoutMs = Number(process.env.HAROGIC_PLUGIN_SWEEP_TIMEOUT_MS) ||
       Math.max(10_000, sweepTimeMs * 4 + 5_000);
 
@@ -396,12 +461,26 @@ class HarogicAdapter {
     return effective;
   }
 
+  async #measureSweepMs() {
+    const t0 = Date.now();
+    try {
+      await this.analyzer.sweep(Math.max(this.sweepTimeoutMs, 60_000));
+    } catch {
+      return 1; // the sweep loop will report what is wrong
+    }
+    return Math.max(1, Math.round((Date.now() - t0) / (this.sweeping ? 2 : 1)));
+  }
+
   async startSweep(onTrace) {
     if (this.sweeping) return;
     this.sweeping = true;
     (async () => {
       let failingSince = null;
       while (this.sweeping && this.analyzer) {
+        if (this.recovering) {
+          if (!(await this.recovering)) return;
+          continue;
+        }
         const generation = this.generation;
         try {
           const { amps, overflow } = await this.analyzer.sweep(this.sweepTimeoutMs);
@@ -414,6 +493,7 @@ class HarogicAdapter {
             // at hundreds of sweeps a second, judge the warnings a few times a second
             if (now - this.lastWarningsAt >= WARNINGS_INTERVAL_MS) {
               this.lastWarningsAt = now;
+              await this.#autoReferenceLevel(now);
               this.#reportWarnings();
             }
           }
@@ -421,17 +501,149 @@ class HarogicAdapter {
             onTrace(amps);
         } catch (err) {
           if (!this.sweeping) return;
-          if (err.timeout || err.exited) return; // the worker is gone; onLost reports it
+          if (err.timeout || err.exited) {
+            // the worker is gone: reconnect (onLost starts the same recovery)
+            if (!(await this.#recover(err.timeout ? `stopped answering (${err.message})` : `the SDK worker stopped (${err.message})`))) return;
+            continue;
+          }
           failingSince ??= Date.now();
           if (Date.now() - failingSince >= LOST_AFTER_MS) {
-            this.#lost(`${this.analyzer?.describe ?? 'Analyzer'} stopped delivering sweeps (${err.message}). ` +
-              'It may have been unplugged or powered off.');
-            return;
+            failingSince = null;
+            if (!(await this.#recover(`stopped delivering sweeps (${err.message})`))) return;
+            continue;
           }
           await new Promise((r) => setTimeout(r, 50));
         }
       }
     })();
+  }
+
+  /**
+   * The analyzer went away: close the worker, reopen and re-apply the last
+   * profile, for up to RECONNECT_WINDOW_MS, while the device shows a critical
+   * warning. Resolves true when the analyzer is back; false after giving up,
+   * by which time the device has been reported failed.
+   */
+  #recover(reason) {
+    if (this.recovering) return this.recovering;
+    const analyzer = this.analyzer;
+    if (!analyzer || this.closed) return Promise.resolve(false);
+    this.recovering = (async () => {
+      const started = Date.now();
+      let attempt = 0;
+      logger('warn', `${analyzer.describe} ${reason}; reconnecting for up to ${RECONNECT_WINDOW_MS / 1000} s`);
+      analyzer.onLost = null;
+      await analyzer.close().catch(() => {});
+      while (!this.closed && this.analyzer === analyzer) {
+        attempt += 1;
+        this.warnings.recovering = {
+          id: 'reconnecting', severity: 'critical',
+          message: `${analyzer.describe} ${reason}. Reconnecting (attempt ${attempt}, ${Math.round((Date.now() - started) / 1000)} s); the trace is not live.`,
+        };
+        this.#reportWarnings();
+        try {
+          await analyzer.open();
+          if (this.profile) await analyzer.configure(this.profile);
+          analyzer.onLost = (err) => this.#recover(err.timeout ? `stopped answering (${err.message})` : `the SDK worker stopped (${err.message})`);
+          this.warnings.recovering = null;
+          this.recentSweeps = [];
+          this.generation += 1;
+          logger('info', `${analyzer.describe}: reconnected after ${Math.round((Date.now() - started) / 1000)} s (attempt ${attempt})`);
+          this.#reportWarnings();
+          return true;
+        } catch (err) {
+          logger('info', `${analyzer.describe}: reconnect attempt ${attempt} failed (${err.message})`);
+          await analyzer.close().catch(() => {});
+          if (Date.now() - started >= RECONNECT_WINDOW_MS) break;
+          await new Promise((r) => setTimeout(r, RECONNECT_RETRY_MS));
+        }
+      }
+      this.warnings.recovering = null;
+      if (!this.closed && this.analyzer === analyzer)
+        this.#lost(`${analyzer.describe} ${reason}, and could not be reconnected within ${Math.round(RECONNECT_WINDOW_MS / 1000)} s. ` +
+          'Check that it is powered and connected.');
+      return false;
+    })().finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
+
+  /** Raise the reference level while the input overloads; return towards the requested level when clean. */
+  async #autoReferenceLevel(now) {
+    const c = this.effective?.controls;
+    if (!c || c.refLevelMode !== 'auto' || c.attenDb !== 'auto' || !this.profile) return;
+    const sweeps = this.recentSweeps.length;
+    if (sweeps < 5) return;
+    const share = this.recentSweeps.filter(([, o]) => o).length / sweeps;
+    const current = this.profile.refLevelDbm;
+    const requested = this.requestedRefDbm ?? current;
+    let next;
+    if (share >= AUTO_REF_ACT_SHARE) {
+      this.autoRef.overloadedAt.set(current, now);
+      this.autoRef.cleanSince = now;
+      if (current < 20) next = Math.min(20, current + AUTO_REF_STEP_DB);
+    } else if (current > requested && now - this.autoRef.cleanSince >= AUTO_REF_SETTLE_MS) {
+      const candidate = Math.max(requested, current - AUTO_REF_STEP_DB);
+      const overloadedRecently = [...this.autoRef.overloadedAt].some(([level, at]) => level <= candidate && now - at < AUTO_REF_MEMORY_MS);
+      if (!overloadedRecently) next = candidate;
+      this.autoRef.cleanSince = now;
+    }
+    if (next === undefined || next === current) return;
+    this.autoRef.inForce = next;
+    this.profile = { ...this.profile, refLevelDbm: next };
+    this.generation += 1;
+    try {
+      const applied = await this.analyzer.configure(this.profile);
+      this.recentSweeps = [];
+      const inForce = Math.round(applied.refLevelDbm);
+      c.refLevelDbm = inForce;
+      logger('info', `${this.analyzer.describe}: auto reference level ${next > current ? 'raised' : 'lowered'} to ${inForce} dBm (set ${requested}; ${share >= AUTO_REF_ACT_SHARE ? `${Math.round(100 * share)}% of sweeps overloaded` : 'no overloads'})`);
+      this.warnings.autoRef = inForce !== requested ? {
+        id: 'auto-ref', severity: 'info',
+        message: `Auto reference level: ${inForce} dBm in force (set ${requested} dBm) because the input overloaded. It returns towards ${requested} after 30 s without overloads.`,
+      } : null;
+    } catch (err) {
+      logger('warn', `${this.analyzer?.describe}: auto reference level change failed (${err.message})`);
+    }
+  }
+
+  #startHealthTimer() {
+    clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => this.#checkHealth().catch(() => {}), HEALTH_INTERVAL_MS);
+    this.healthTimer.unref?.();
+    this.#checkHealth().catch(() => {});
+  }
+
+  /** Supply and temperature, read between sweeps; warnings for what a person can act on. */
+  async #checkHealth() {
+    if (!this.analyzer?.isOpen || this.recovering) return;
+    const [power, status] = await Promise.all([
+      this.analyzer.power().catch(() => null),
+      this.analyzer.status().catch(() => null),
+    ]);
+    const list = [];
+    if (power) {
+      this.lastPower = power;
+      const onPowerPort = power.powerPortV > 3;
+      if (this.analyzer.target?.iface === 'usb' && !onPowerPort) {
+        list.push({
+          id: 'usb-power', severity: 'warning',
+          message: `The analyzer is running from USB power alone (${power.usbV.toFixed(2)} V, ${power.usbA.toFixed(2)} A). It can brown out under load (sweeps fail with bus errors, the device drops off); connect its power port to a supply.`,
+        });
+      } else if (power.usbV > 0 && power.usbV < 4.5) {
+        list.push({
+          id: 'power-sag', severity: 'warning',
+          message: `The USB supply voltage is low (${power.usbV.toFixed(2)} V). Use a shorter cable or a different port; the analyzer may drop off the bus.`,
+        });
+      }
+    }
+    if (status && isNum(status.temperatureC) && status.temperatureC >= TEMPERATURE_WARN_C) {
+      list.push({
+        id: 'temperature', severity: 'warning',
+        message: `The analyzer is at ${status.temperatureC.toFixed(0)} °C. Give it airflow; accuracy drifts when it runs hot.`,
+      });
+    }
+    this.warnings.health = list;
+    this.#reportWarnings();
   }
 
   async stopSweep() {
@@ -440,6 +652,9 @@ class HarogicAdapter {
 
   async close() {
     this.sweeping = false;
+    this.closed = true;
+    clearInterval(this.healthTimer);
+    this.healthTimer = null;
     if (this.host) openHosts.delete(this.host);
     this.forwarder?.close();
     this.forwarder = null;
@@ -458,23 +673,28 @@ class HarogicAdapter {
   }
 
   #reportWarnings() {
-    const list = [...this.warnings.info];
+    const list = [...this.warnings.info, ...(this.warnings.health ?? [])];
+    if (this.warnings.recovering) list.push(this.warnings.recovering);
     if (this.warnings.refNotice) list.push(this.warnings.refNotice);
     if (this.warnings.preampNotice) list.push(this.warnings.preampNotice);
+    if (this.warnings.autoRef) list.push(this.warnings.autoRef);
     const sweeps = this.recentSweeps.length;
     const overloaded = this.recentSweeps.filter(([, o]) => o).length;
     if (sweeps > 0 && overloaded / sweeps >= OVERLOAD_MIN_SHARE) {
       // in steps of 5, so the text does not change on every report
       const pct = Math.max(1, 5 * Math.round((100 * overloaded) / sweeps / 5));
       const c = this.effective?.controls ?? {};
-      const advice = c.preamp && c.preamp !== 'off'
+      const advice = c.refLevelMode === 'auto' && c.attenDb === 'auto'
+        ? 'The reference level is being raised automatically.'
+        : c.preamp && c.preamp !== 'off'
         ? 'Turn the preamplifier down or off, then add attenuation if it continues.'
         : c.attenDb === 'auto'
           ? 'Raise the reference level, or set the attenuation by hand.'
           : Number(c.attenDb) < 30
             ? 'Add attenuation.'
             : 'The attenuation is at its maximum: use an external attenuator or a filter.';
-      const critical = overloaded / sweeps >= OVERLOAD_CRITICAL_SHARE;
+      // critical needs a sample worth judging: 1 of 3 sweeps is not a share
+      const critical = sweeps >= 20 && overloaded / sweeps >= OVERLOAD_CRITICAL_SHARE;
       list.push({
         id: 'overload', severity: critical ? 'critical' : 'warning',
         message: critical

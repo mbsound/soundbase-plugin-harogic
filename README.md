@@ -28,7 +28,8 @@ Beside SoundBase's own RBW and point count, each analyzer offers:
 
 | Control | |
 |---|---|
-| Reference level | −100 to +20 dBm. The analyzer settles it; SoundBase shows the value in force. Lower it if an overload warning appears. |
+| Reference level | −100 to +20 dBm. Sets the gain and with it the noise floor (−20 → about −108 dBm, −30 → −112, −40 → −114 at RBW 5 kHz). |
+| Auto reference level | On (default): while the input overloads the level is raised in 5 dB steps until it stops, and lowered again after 30 s clean, never below a level that overloaded in the last 5 minutes; the level in force is shown as a notice. Off: the level is used as set. |
 | Attenuation | Auto, or 0–30 dB in 5 dB steps |
 | Preamplifier | Auto, Off, or Low/Medium/High gain on models that have them |
 | Detector | Peak (default), Average, RMS, Sample |
@@ -55,6 +56,22 @@ show the trace at the analyzer's resolution.
 
 RBW left on auto follows fReqon's rule: 10 kHz up to a 15 MHz span, 30 kHz to
 50 MHz, 50 kHz to 150 MHz, 100 kHz above.
+
+## What the plugin does on its own
+
+- **Reconnects.** When the analyzer stops answering (unplugged, powered off,
+  a network blip, a brown-out), the device shows a critical "reconnecting"
+  warning and the plugin reopens it and re-applies the settings for up to two
+  minutes, then resumes sweeping. Only after that does the device fail.
+- **Watches the supply and temperature** every 5 s: a USB analyzer running
+  from USB power alone, a sagging USB voltage, or a core above 65 °C each get a
+  warning that says what to do.
+- **Times a sweep** after every configuration change and reports it, so
+  SoundBase can tell a slow sweep (narrow RBW and VBW) from a stalled one.
+- **Names the hardware** from the SDK's core table: "SAN-60 (N60 core R6)",
+  "N90 core R0" for a network analyzer built around an N90.
+
+`npm run hw-check` proves all of this against a connected analyzer.
 
 ## Firmware and SDK builds
 
@@ -117,6 +134,7 @@ npm install
 npm test                          # the whole stack against a fake worker, plus the real workers in mock mode
 HAROGIC_PLUGIN_MOCK=1 npm run smoke   # boot as SoundBase does, with two simulated analyzers
 npm run smoke                     # the same with real discovery
+npm run hw-check                  # open, configure, sweep and read back a connected analyzer
 ```
 
 To try it in SoundBase Desktop without packing anything:

@@ -27,9 +27,13 @@ useWorkers([{ sdk: '0.55.100' }]);
 process.env.HAROGIC_PLUGIN_STALL_MS = '500';
 process.env.HAROGIC_PLUGIN_SWEEP_TIMEOUT_MS = '600';
 process.env.HAROGIC_PLUGIN_OPEN_RETRY_MS = '100';
+process.env.HAROGIC_PLUGIN_RECONNECT_MS = '1500';
+process.env.HAROGIC_PLUGIN_RECONNECT_RETRY_MS = '100';
+process.env.HAROGIC_PLUGIN_HEALTH_MS = '200';
+process.env.HAROGIC_PLUGIN_AUTOREF_SETTLE_MS = '400';
 
 const { parseIoreg, parseAddresses } = await import('../driver/discovery.js');
-const { USB_PRODUCT, NETWORK_PRODUCT, autoRbwHz } = await import('../adapter.js');
+const { USB_PRODUCT, NETWORK_PRODUCT, autoRbwHz, modelName } = await import('../adapter.js');
 const manifest = JSON.parse(
   readFileSync(new URL('../soundbase-plugin.json', import.meta.url), 'utf8')
 );
@@ -138,7 +142,7 @@ test('config, sweep and trace on SoundBase’s grid', async (t) => {
   const caps = (await deviceRow(id)).capabilities;
   assert.deepEqual(
     caps.controls.map((c) => c.id),
-    ['refLevelDbm', 'attenDb', 'preamp', 'detector', 'vbw', 'spurRejection']
+    ['refLevelDbm', 'refLevelMode', 'attenDb', 'preamp', 'detector', 'vbw', 'spurRejection']
   );
 
   await request('POST', `${devicePath(id)}/sweep/start`);
@@ -172,6 +176,7 @@ test('out-of-range settings are clamped and echoed, not rejected', async () => {
     detector: 'average',
     spurRejection: 'standard',
     vbw: 'auto',
+    refLevelMode: 'auto',
   });
 
   // a patch carrying one control leaves the others in force
@@ -222,16 +227,19 @@ test('a preamplifier the analyzer overrides is explained', async () => {
 test('an IF overflow is reported as an overload warning', async (t) => {
   const id = 'net:127.0.0.1';
   await request('POST', `${devicePath(id)}/configuration`, {
-    startHz: 470e6, stopHz: 616e6, pointCount: 401, controls: { preamp: 'high' },
+    startHz: 470e6, stopHz: 616e6, pointCount: 401, controls: { preamp: 'high', refLevelMode: 'manual' },
   });
   await request('POST', `${devicePath(id)}/sweep/start`);
   t.after(() => request('POST', `${devicePath(id)}/sweep/stop`));
   let warnings = [];
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 5_000;
   while (!warnings.some((w) => w.id === 'overload') && Date.now() < deadline) {
     await delay(50);
+    await request('GET', `${devicePath(id)}/trace`);
     warnings = (await deviceRow(id)).status.warnings ?? [];
   }
+  await delay(600); // a full warnings interval with a settled window
+  warnings = (await deviceRow(id)).status.warnings ?? [];
   const overload = warnings.find((w) => w.id === 'overload');
   assert.ok(overload, JSON.stringify(warnings));
   assert.equal(overload.severity, 'warning');
@@ -253,7 +261,7 @@ test('a firmware mismatch moves on to the next SDK build', async () => {
     startHz: 88e6, stopHz: 108e6, pointCount: 201,
   });
   assert.equal(applied.status, 200, JSON.stringify(applied.body));
-  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').filter((l) => !/ (power|status|sweep)$/.test(l)), [
     '0.55.100 open',
     '0.55.89 open',
     '0.55.89 config',
@@ -289,46 +297,122 @@ test('a network open that stalls is killed and retried', async () => {
   assert.ok(Date.now() - started < 5_000);
 });
 
-test('a worker that dies mid-sweep fails the device, and the next request reopens it', async () => {
+test('a worker that dies mid-sweep is reconnected by the plugin and sweeping resumes', async () => {
   useWorkers([{ sdk: '0.55.100', env: { FAKE_DIE_AFTER: '3' } }]);
   const id = await addNetworkDevice();
   await request('POST', `${devicePath(id)}/configuration`, {
     startHz: 88e6, stopHz: 108e6, pointCount: 201,
   });
   await request('POST', `${devicePath(id)}/sweep/start`);
+  // the fake dies after 3 sweeps; a fresh worker (its counter at zero) dies
+  // after 3 more, so the device cycles through reconnects but stays alive
+  let sawReconnecting = false;
+  const first = await request('GET', `${devicePath(id)}/trace`);
+  const deadline = Date.now() + 2_500;
   let row;
-  const deadline = Date.now() + 3_000;
-  do {
+  while (Date.now() < deadline) {
     await delay(50);
     row = await deviceRow(id);
-  } while (row.status.status !== 'failed' && Date.now() < deadline);
-  assert.equal(row.status.status, 'failed');
-  assert.match(row.status.message, /SDK worker stopped/);
+    if ((row.status.warnings ?? []).some((w) => w.id === 'reconnecting')) sawReconnecting = true;
+  }
+  assert.notEqual(row.status.status, 'failed', JSON.stringify(row.status));
+  assert.ok(sawReconnecting, 'a reconnecting warning was shown');
+  const later = await request('GET', `${devicePath(id)}/trace`);
+  assert.ok(later.body.sweepId > first.body.sweepId, 'sweeps continued across the reconnects');
+});
 
-  useWorkers([{ sdk: '0.55.100' }]);
-  const again = await request('POST', `${devicePath(id)}/configuration`, {
-    startHz: 88e6, stopHz: 108e6, pointCount: 201,
-  });
+test('a worker that cannot be reopened within the window fails the device, and a later request reopens it', async () => {
+  const fails = join(scratch, 'fail-opens-forever');
+  writeFileSync(fails, '0');
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_DIE_AFTER: '2', FAKE_FAIL_OPENS_FILE: fails } }]);
+  const id = await addNetworkDevice();
+  await request('POST', `${devicePath(id)}/configuration`, { startHz: 88e6, stopHz: 108e6, pointCount: 201 });
+  await request('POST', `${devicePath(id)}/sweep/start`);
+  writeFileSync(fails, '1000'); // every reopen now answers -8
+  let row;
+  const deadline = Date.now() + 6_000;
+  do {
+    await delay(100);
+    row = await deviceRow(id);
+  } while (row.status.status !== 'failed' && Date.now() < deadline);
+  assert.equal(row.status.status, 'failed', JSON.stringify(row.status));
+  assert.match(row.status.message, /could not be reconnected within/);
+
+  writeFileSync(fails, '0');
+  const again = await request('POST', `${devicePath(id)}/configuration`, { startHz: 88e6, stopHz: 108e6, pointCount: 201 });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.equal((await deviceRow(id)).status.status, 'ok');
 });
 
-test('an analyzer that stops answering mid-sweep is reported in words a person can act on', async () => {
+test('the measured sweep time is reported, and the configuration echo carries it', async () => {
+  useWorkers([{ sdk: '0.55.100' }]);
+  const id = await addNetworkDevice();
+  const applied = await request('POST', `${devicePath(id)}/configuration`, { startHz: 88e6, stopHz: 108e6, pointCount: 201 });
+  // the fake sweeps in ~10 ms
+  assert.ok(applied.body.resolved.sweepTimeMs >= 5 && applied.body.resolved.sweepTimeMs < 500, JSON.stringify(applied.body.resolved));
+});
+
+test('running from USB power alone and running hot are warned about', async () => {
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_USB_ONLY: '1', FAKE_TEMPERATURE_C: '71' } }]);
+  process.env.HAROGIC_PLUGIN_USB_LIST = JSON.stringify([
+    { locationId: '01200000', index: 0, product: 'Spectrum Analyzer', serial: '066_0000000000c0ffe3' },
+  ]);
+  const id = 'usb:066_0000000000c0ffe3';
+  await request('POST', '/devices', { id, product: USB_PRODUCT });
+  await request('POST', `${devicePath(id)}/configuration`, { startHz: 88e6, stopHz: 108e6, pointCount: 201 });
+  await delay(500);
+  const ids = ((await deviceRow(id)).status.warnings ?? []).map((w) => w.id);
+  assert.ok(ids.includes('usb-power'), ids.join(','));
+  assert.ok(ids.includes('temperature'), ids.join(','));
+});
+
+test('auto reference level raises the level while the input overloads, and reports it', async () => {
+  // the fake overloads whenever the configured reference level is below -25
+  useWorkers([{ sdk: '0.55.100', env: { FAKE_OVERLOAD_BELOW_REF: '-25' } }]);
+  const id = await addNetworkDevice();
+  const applied = await request('POST', `${devicePath(id)}/configuration`, {
+    startHz: 88e6, stopHz: 108e6, pointCount: 201, controls: { refLevelDbm: -40, refLevelMode: 'auto' },
+  });
+  assert.equal(applied.body.controls.refLevelDbm, -40);
+  await request('POST', `${devicePath(id)}/sweep/start`);
+  let notice;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    await delay(100);
+    notice = ((await deviceRow(id)).status.warnings ?? []).find((w) => w.id === 'auto-ref');
+    if (notice && /-25 dBm in force/.test(notice.message)) break;
+  }
+  assert.match(notice?.message ?? '', /-25 dBm in force \(set -40 dBm\)/);
+  await delay(300);
+  const warnings = (await deviceRow(id)).status.warnings ?? [];
+  assert.equal(warnings.find((w) => w.id === 'overload'), undefined, 'overloads stopped once the level was raised');
+});
+
+test('model names come from the SDK core table', () => {
+  assert.equal(modelName(66, 'usb'), 'SAN-60 (N60 core R6)');
+  assert.equal(modelName(67, 'eth'), 'N90 core R0');
+  assert.equal(modelName(55, 'usb'), 'SAN-45 (N45 core R4)');
+  assert.equal(modelName(999, 'usb'), 'model 999');
+});
+
+test('an analyzer that stops answering mid-sweep is reconnected, with the reason in words a person can act on', async () => {
   useWorkers([{ sdk: '0.55.100', env: { FAKE_HANG_AFTER: '3' } }]);
   const id = await addNetworkDevice();
   await request('POST', `${devicePath(id)}/configuration`, {
     startHz: 88e6, stopHz: 108e6, pointCount: 201,
   });
   await request('POST', `${devicePath(id)}/sweep/start`);
-  let row;
+  let seen;
   const deadline = Date.now() + 4_000;
-  do {
+  while (Date.now() < deadline && !seen) {
     await delay(50);
-    row = await deviceRow(id);
-  } while (row.status.status !== 'failed' && Date.now() < deadline);
-  assert.equal(row.status.status, 'failed');
-  assert.match(row.status.message, /stopped answering \(sweep did not answer within 1 s\)\. It may have been unplugged/);
-  assert.doesNotMatch(row.status.message, /SIGKILL/);
+    seen = ((await deviceRow(id)).status.warnings ?? []).find((w) => w.id === 'reconnecting');
+  }
+  assert.ok(seen, 'a reconnecting warning appeared');
+  assert.equal(seen.severity, 'critical');
+  assert.match(seen.message, /stopped answering \(sweep did not answer within 1 s\)\. Reconnecting/);
+  assert.doesNotMatch(seen.message, /SIGKILL/);
+  assert.notEqual((await deviceRow(id)).status.status, 'failed');
 });
 
 test('a network device added with a nonsense address says what an address looks like', async () => {

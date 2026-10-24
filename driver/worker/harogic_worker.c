@@ -593,6 +593,18 @@ int main(void) {
         else if (!strcmp(op, "config")) op_config(id, line);
         else if (!strcmp(op, "sweep")) op_sweep(id);
         else if (!strcmp(op, "status")) op_status(id);
+        else if (!strcmp(op, "power")) {
+            /* supply voltage and current on the power port and the USB port */
+            if (!is_open) { reply_err(id, -1, "not open"); continue; }
+            PowerSupplyState_TypeDef ps = {0};
+            int st = 0;
+            if (mock) { ps.rf_vlotage = 5.1f; ps.rf_current = 1.2f; ps.usb_vlotage = 5.0f; ps.usb_current = 0.4f; }
+            else st = Device_QueryPowerSupplyState(&dev, &ps);
+            if (st != 0) { char m[64]; snprintf(m, sizeof m, "Device_QueryPowerSupplyState returned %d", st); reply_err(id, st, m); continue; }
+            printf("{\"id\":%ld,\"ok\":true,\"result\":{\"powerPortV\":%.2f,\"powerPortA\":%.2f,\"usbV\":%.2f,\"usbA\":%.2f}}\n",
+                   id, ps.rf_vlotage, ps.rf_current, ps.usb_vlotage, ps.usb_current);
+            fflush(stdout);
+        }
         else if (!strcmp(op, "freqplan")) {
             /* diagnostics: the SDK's RF band plan from startHz to stopHz in stepHz */
             double f0 = get_num(line, "startHz", 470e6), f1 = get_num(line, "stopHz", 616e6), st = get_num(line, "stepHz", 2e6);

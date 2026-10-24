@@ -28,7 +28,8 @@
     "smoke": "node scripts/smoke.mjs",
     "rename": "node scripts/rename.mjs",
     "bump": "node scripts/bump-version.mjs",
-    "pack:release": "node scripts/pack-release.mjs"
+    "pack:release": "node scripts/pack-release.mjs",
+    "hw-check": "node scripts/hw-check.mjs"
   },
   "dependencies": {
     "@soundbase/plugin-contract": "^0.12.2",

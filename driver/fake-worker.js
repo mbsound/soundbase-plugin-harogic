@@ -13,6 +13,8 @@
 //                       decrements it and answers -8 (bus error: still starting)
 //   FAKE_DIE_AFTER      exit abruptly after this many sweeps (cable pulled)
 //   FAKE_HANG_AFTER     stop answering after this many sweeps (network gone)
+//   FAKE_OVERLOAD_BELOW_REF sweeps overload while the configured reference
+//                       level is below this (dBm); default: one sweep in five
 //   FAKE_LOG_FILE       append every request's op here, one per line
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -95,10 +97,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         if (sweeps % 7 === 0) a += gauss(f, startHz + span * 0.5, span * 0.003, 50);
         amps.push(Math.round(a * 100) / 100);
       }
-      return setTimeout(() => ok({ overflow: sweeps % 5 === 0, temperatureC: 40, amps }), 10);
+      const overflow = env.FAKE_OVERLOAD_BELOW_REF !== undefined ? config.refLevelDbm < Number(env.FAKE_OVERLOAD_BELOW_REF) : sweeps % 5 === 0;
+      return setTimeout(() => ok({ overflow, temperatureC: 40, missingHops: 0, rejectedFrames: 0, emptyBins: 0, amps }), 10);
     }
     case 'status':
-      return ok({ temperatureC: 40 });
+      return ok({ temperatureC: Number(env.FAKE_TEMPERATURE_C) || 40 });
+    case 'power':
+      return ok(env.FAKE_USB_ONLY === '1' ? { powerPortV: 0, powerPortA: 0, usbV: 4.9, usbA: 0.85 }
+        : { powerPortV: 5.1, powerPortA: 1.2, usbV: 5.0, usbA: 0.4 });
     case 'close':
       ok({});
       return process.exit(0);
